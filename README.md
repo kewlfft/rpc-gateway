@@ -1,6 +1,3 @@
-> [!CAUTION]
-> The repository has been marked as read-only, and no further updates or maintenance will be provided.
-
 ## RPC Gateway
 
 The rpc-gateway is a failover proxy for node providers. When health checks
