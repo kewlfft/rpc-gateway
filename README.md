@@ -50,10 +50,10 @@ healthChecks:
   successThreshold: 1 # how many successes to be marked as healthy again
 
 targets: # the order here determines the failover order
-  - name: "Cloudflare"
+  - name: "publicnode"
     connection:
       http: # ws is supported by default, it will be a sticky connection.
-        url: "https://cloudflare-eth.com"
+        url: "https://ethereum.publicnode.com"
   - name: "Alchemy"
     connection:
       http: # ws is supported by default, it will be a sticky connection.

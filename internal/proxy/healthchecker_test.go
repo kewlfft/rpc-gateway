@@ -17,7 +17,7 @@ func TestBasicHealthchecker(t *testing.T) {
 	defer cancel()
 
 	healtcheckConfig := HealthCheckerConfig{
-		URL:              env.GetDefault("RPC_GATEWAY_NODE_URL_1", "https://cloudflare-eth.com"),
+		URL:              env.GetDefault("RPC_GATEWAY_NODE_URL_1", "https://ethereum.publicnode.com"),
 		Interval:         1 * time.Second,
 		Timeout:          2 * time.Second,
 		FailureThreshold: 1,
@@ -30,9 +30,10 @@ func TestBasicHealthchecker(t *testing.T) {
 
 	healthchecker.Start(ctx)
 
-	assert.NotZero(t, healthchecker.BlockNumber())
+	// Wait for a health check cycle
+	time.Sleep(2 * time.Second)
 
-	// TODO: can be flaky due to cloudflare-eth endpoint
+	assert.NotZero(t, healthchecker.BlockNumber())
 	assert.True(t, healthchecker.IsHealthy())
 
 	healthchecker.blockNumber = 0
