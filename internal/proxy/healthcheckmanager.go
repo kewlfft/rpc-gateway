@@ -132,6 +132,16 @@ func (h *HealthCheckManager) IsHealthy(name string) bool {
 	return false
 }
 
+// GetHealthChecker returns the health checker for a given provider name
+func (h *HealthCheckManager) GetHealthChecker(name string) *HealthChecker {
+	for _, hc := range h.hcs {
+		if hc.Name() == name {
+			return hc
+		}
+	}
+	return nil
+}
+
 func (h *HealthCheckManager) reportStatusMetrics() {
 	// Use read lock for initial value checks
 	h.lastReportedValues.RLock()

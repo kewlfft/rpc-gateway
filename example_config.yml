@@ -4,7 +4,7 @@ metrics:
   port: 9090 # port for prometheus metrics, served on /metrics and /
 
 proxy:
-  port: 3000 # port for RPC gateway
+  port: 3020 # port for RPC gateway
   upstreamTimeout: "1s" # when is a request considered timed out
 
 healthChecks:
@@ -15,9 +15,17 @@ healthChecks:
   blockDiffThreshold: 2 # maximum allowed block difference between providers
 
 targets:
+  - name: "meow"
+    connection:
+      http:
+        url: "https://eth.meowrpc.com"
+  - name: "1rpc"
+    connection:
+      http:
+        url: "https://1rpc.io/eth"
   - name: "Ankr"
     connection:
-      http: # ws is supported by default, it will be a sticky connection.
+      http:
         url: "https://rpc.ankr.com/eth"
         # compression: true # Specify if the target supports request compression
   - name: "publicnode"
