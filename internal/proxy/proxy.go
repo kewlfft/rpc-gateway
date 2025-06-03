@@ -20,6 +20,24 @@ func (d Duration) LogValue() slog.Value {
 	return slog.StringValue(time.Duration(d).String())
 }
 
+type BufferedResponseWriter struct {
+	header     http.Header
+	body       *bytes.Buffer
+	statusCode int
+}
+
+func (w *BufferedResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *BufferedResponseWriter) Write(b []byte) (int, error) {
+	return w.body.Write(b)
+}
+
+func (w *BufferedResponseWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+}
+
 type Proxy struct {
 	targets []*NodeProvider
 	hcm     *HealthCheckManager
@@ -102,13 +120,11 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 		statusCode == http.StatusServiceUnavailable
 }
 
-func (p *Proxy) copyHeaders(dst http.ResponseWriter, src http.ResponseWriter) {
-	for k, v := range src.Header() {
-		if len(v) == 0 {
-			continue
+func (p *Proxy) copyHeaders(dst http.ResponseWriter, src http.Header) {
+	for k, v := range src {
+		for _, val := range v {
+			dst.Header().Add(k, val)
 		}
-
-		dst.Header().Set(k, v[0])
 	}
 }
 
@@ -126,88 +142,61 @@ func (p *Proxy) errServiceUnavailable(w http.ResponseWriter) {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Read the body once and store it for reuse
+	// Read body once and reuse it
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		p.logger.Error("Failed to read request body", "error", err)
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	_ = r.Body.Close()
 
-	// Create a new context for the request that won't be canceled by parent context
-	ctx := context.Background()
-	r = r.WithContext(ctx)
-
-	// Try each provider sequentially
 	for _, target := range p.targets {
 		name := target.Name()
 		
-		// Skip if provider is unhealthy
 		if !p.hcm.IsHealthy(name) {
-			p.logger.Debug("Skipping unhealthy provider", 
-				"provider", name,
-			)
+			p.logger.Debug("Skipping unhealthy provider", "provider", name)
 			continue
 		}
 
 		start := time.Now()
-		p.logger.Debug("Attempting request with provider", 
-			"provider", name,
-			"method", r.Method,
-			"path", r.URL.Path,
-		)
 
-		// Create a new request for each attempt to ensure clean state
-		req, err := http.NewRequestWithContext(ctx, r.Method, r.URL.String(), bytes.NewReader(bodyBytes))
-		if err != nil {
-			p.logger.Error("Failed to create request", "error", err)
-			continue
+		// Clone original request with clean context and body
+		req := r.Clone(context.Background())
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		// Buffered response writer
+		pw := &BufferedResponseWriter{
+			header:     make(http.Header, len(r.Header)),
+			body:       new(bytes.Buffer),
+			statusCode: http.StatusOK,
 		}
 
-		// Copy headers from original request
-		for k, v := range r.Header {
-			req.Header[k] = v
-		}
-
-		pw := NewResponseWriter()
 		p.timeoutHandler(target).ServeHTTP(pw, req)
 
-		if p.HasNodeProviderFailed(pw.statusCode) {
-			p.metricRequestDuration.WithLabelValues(name, r.Method, strconv.Itoa(pw.statusCode)).
-				Observe(time.Since(start).Seconds())
+		status := pw.statusCode
+		duration := time.Since(start)
+
+		p.metricRequestDuration.WithLabelValues(name, r.Method, strconv.Itoa(status)).Observe(duration.Seconds())
+
+		if p.HasNodeProviderFailed(status) {
 			p.metricRequestErrors.WithLabelValues(name, "rerouted").Inc()
 
-			// Taint the provider if it returned an error
 			if hc := p.hcm.GetHealthChecker(name); hc != nil {
 				hc.TaintHTTP()
-				p.logger.Debug("Provider tainted due to error", 
-					"provider", name,
-					"status", pw.statusCode,
-				)
 			}
 
-			p.logger.Debug("Request failed, trying next provider", 
-				"provider", name,
-				"status", pw.statusCode,
-			)
+			p.logger.Debug("Request failed, trying next provider", "provider", name, "status", status)
 			continue
 		}
 
-		duration := time.Since(start)
-		p.logger.Debug("Request successful with provider", 
-			"provider", name,
-			"status", pw.statusCode,
-			"duration", Duration(duration),
-		)
+		p.logger.Debug("Request successful", "provider", name, "status", status, "duration", Duration(duration))
 
-		p.copyHeaders(w, pw)
-		w.WriteHeader(pw.statusCode)
-		w.Write(pw.body.Bytes()) // nolint:errcheck
+		// Copy headers
+		p.copyHeaders(w, pw.header)
 
-		p.metricRequestDuration.WithLabelValues(name, r.Method, strconv.Itoa(pw.statusCode)).
-			Observe(duration.Seconds())
-
+		w.WriteHeader(status)
+		_, _ = w.Write(pw.body.Bytes())
 		return
 	}
 
