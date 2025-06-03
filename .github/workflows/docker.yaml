@@ -1,53 +1,53 @@
-name: docker
+# name: docker
 
-on:
-  pull_request:
-    branches:
-      - main
-  push:
-    branches:
-      - main
+# on:
+#   pull_request:
+#     branches:
+#       - main
+#   push:
+#     branches:
+#       - main
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# concurrency:
+#   group: ${{ github.workflow }}-${{ github.ref }}
+#   cancel-in-progress: true
 
 
-jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hadolint/hadolint-action@v3.1.0
-        with:
-          recursive: true
-          ignore: DL3018,DL3019
+# jobs:
+#   lint:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: hadolint/hadolint-action@v3.1.0
+#         with:
+#           recursive: true
+#           ignore: DL3018,DL3019
 
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      # - uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     role-to-assume: ${{ secrets.AWSROLE }}
-      #     aws-region: ${{ secrets.AWSREGION }}
-      #   if: ${{ github.actor != 'dependabot[bot]' }}
-      # - uses: aws-actions/amazon-ecr-login@v2
-      #   if: ${{ github.actor != 'dependabot[bot]' }}
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v5
-        with:
-         push: ${{ github.ref == 'refs/heads/main' }}
-         platforms: linux/amd64,linux/arm64
-         tags: ${{ secrets.REGISTRY }}/rpc-gateway:${{ github.sha }}
-        if: ${{ github.actor != 'dependabot[bot]' }}
-      - uses: docker/build-push-action@v5
-        with:
-         push: false
-         platforms: linux/amd64,linux/arm64
-         tags: ${{ secrets.REGISTRY }}/rpc-gateway:${{ github.sha }}
-        if: ${{ github.actor == 'dependabot[bot]' }}
+#   build:
+#     runs-on: ubuntu-latest
+#     permissions:
+#       id-token: write
+#       contents: read
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           role-to-assume: ${{ secrets.AWSROLE }}
+#           aws-region: ${{ secrets.AWSREGION }}
+#         if: ${{ github.actor != 'dependabot[bot]' }}
+#       - uses: aws-actions/amazon-ecr-login@v2
+#         if: ${{ github.actor != 'dependabot[bot]' }}
+#       - uses: docker/setup-qemu-action@v3
+#       - uses: docker/setup-buildx-action@v3
+#       - uses: docker/build-push-action@v5
+#         with:
+#          push: ${{ github.ref == 'refs/heads/main' }}
+#          platforms: linux/amd64,linux/arm64
+#          tags: ${{ secrets.REGISTRY }}/rpc-gateway:${{ github.sha }}
+#         if: ${{ github.actor != 'dependabot[bot]' }}
+#       - uses: docker/build-push-action@v5
+#         with:
+#          push: false
+#          platforms: linux/amd64,linux/arm64
+#          tags: ${{ secrets.REGISTRY }}/rpc-gateway:${{ github.sha }}
+#         if: ${{ github.actor == 'dependabot[bot]' }}
