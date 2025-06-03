@@ -44,9 +44,6 @@ type HealthChecker struct {
 	// gasLeft received from the GasLeft.sol contract call.
 	gasLeft uint64
 
-	// is the ethereum RPC node healthy according to the RPCHealthchecker
-	isHealthy bool
-
 	mu sync.RWMutex
 }
 
@@ -63,7 +60,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		client:     client,
 		httpClient: &http.Client{},
 		config:     config,
-		isHealthy:  true,
+		blockNumber: 1,
+		gasLeft:    1,
 	}
 
 	return healthchecker, nil
@@ -141,12 +139,10 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err != nil {
-		h.isHealthy = false
-
+		h.gasLeft = 0
 		return
 	}
 	h.gasLeft = gasLeft
-	h.isHealthy = true
 }
 
 func (h *HealthChecker) Start(c context.Context) {
@@ -174,7 +170,7 @@ func (h *HealthChecker) IsHealthy() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	return h.isHealthy
+	return h.blockNumber > 0 && h.gasLeft > 0
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {
