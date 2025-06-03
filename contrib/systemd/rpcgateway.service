@@ -1,0 +1,13 @@
+[Unit]
+Description=RPC Gateway Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rpcgateway -config %I
+Restart=always
+RestartSec=10
+Environment=LOG_LEVEL=info
+
+[Install]
+WantedBy=multi-user.target 
