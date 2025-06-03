@@ -56,10 +56,10 @@ healthChecks:
 targets: # the order here determines the failover order
   - name: "publicnode"
     connection:
-      http: # ws is supported by default, it will be a sticky connection.
+      http:
         url: "https://ethereum.publicnode.com"
   - name: "Alchemy"
     connection:
-      http: # ws is supported by default, it will be a sticky connection.
+      http:
         url: "https://alchemy.com/rpc/<apikey>"
 ```
