@@ -180,7 +180,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			// Taint the provider if it returned an error
 			if hc := p.hcm.GetHealthChecker(name); hc != nil {
-				hc.Taint()
+				hc.TaintHTTP()
 				p.logger.Debug("Provider tainted due to error", 
 					"provider", name,
 					"status", pw.statusCode,

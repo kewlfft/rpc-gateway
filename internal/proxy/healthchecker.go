@@ -13,11 +13,32 @@ import (
 
 const (
 	userAgent = "rpc-gateway-health-check"
-	
-	// Taint configuration
-	initialTaintWaitTime = time.Second * 30
-	maxTaintWaitTime = time.Minute * 10
-	resetTaintWaitTimeAfterDuration = time.Minute * 5
+)
+
+// TaintConfig defines the taint behavior parameters
+type TaintConfig struct {
+	InitialWaitTime    time.Duration
+	MaxWaitTime        time.Duration
+	ResetWaitDuration  time.Duration
+	Reason            string
+}
+
+var (
+	// Health check taint configuration
+	healthCheckTaintConfig = TaintConfig{
+		InitialWaitTime:   time.Second * 30,
+		MaxWaitTime:       time.Minute * 10,
+		ResetWaitDuration: time.Minute * 5,
+		Reason:           "health check failure",
+	}
+
+	// HTTP request taint configuration (faster cycle)
+	httpTaintConfig = TaintConfig{
+		InitialWaitTime:   time.Second * 5,
+		MaxWaitTime:       time.Minute * 1,
+		ResetWaitDuration: time.Second * 30,
+		Reason:           "HTTP error",
+	}
 )
 
 // TaintState represents the current state of a health checker
@@ -26,6 +47,7 @@ type TaintState struct {
 	lastRemoval time.Time
 	waitTime time.Duration
 	removalTimer *time.Timer
+	config TaintConfig
 }
 
 type HealthCheckerConfig struct {
@@ -88,7 +110,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		blockNumber: 1,
 		gasLeft:    1,
 		taint: TaintState{
-			waitTime: initialTaintWaitTime,
+			waitTime: healthCheckTaintConfig.InitialWaitTime,
+			config:   healthCheckTaintConfig,
 		},
 	}
 
@@ -231,7 +254,8 @@ func (h *HealthChecker) IsTainted() bool {
 	return h.taint.isTainted
 }
 
-func (h *HealthChecker) Taint() {
+// Taint marks the provider as unhealthy for a configurable duration
+func (h *HealthChecker) Taint(config TaintConfig) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -239,14 +263,17 @@ func (h *HealthChecker) Taint() {
 		return
 	}
 
+	// Update taint configuration
+	h.taint.config = config
+
 	// Calculate new wait time
-	if time.Since(h.taint.lastRemoval) <= resetTaintWaitTimeAfterDuration {
+	if time.Since(h.taint.lastRemoval) <= config.ResetWaitDuration {
 		h.taint.waitTime *= 2
-		if h.taint.waitTime > maxTaintWaitTime {
-			h.taint.waitTime = maxTaintWaitTime
+		if h.taint.waitTime > config.MaxWaitTime {
+			h.taint.waitTime = config.MaxWaitTime
 		}
 	} else {
-		h.taint.waitTime = initialTaintWaitTime
+		h.taint.waitTime = config.InitialWaitTime
 	}
 
 	// Stop any existing removal timer
@@ -260,9 +287,20 @@ func (h *HealthChecker) Taint() {
 
 	h.logger.Info("RPC provider tainted", 
 		"name", h.config.Name,
+		"reason", config.Reason,
 		"waitTime", h.taint.waitTime,
 		"nextRemoval", time.Now().Add(h.taint.waitTime),
 	)
+}
+
+// TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
+func (h *HealthChecker) TaintHTTP() {
+	h.Taint(httpTaintConfig)
+}
+
+// TaintHealthCheck is a convenience method that uses the health check taint configuration
+func (h *HealthChecker) TaintHealthCheck() {
+	h.Taint(healthCheckTaintConfig)
 }
 
 func (h *HealthChecker) RemoveTaint() {

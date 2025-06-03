@@ -291,13 +291,10 @@ func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, update
 	)
 
 	if diff > uint64(h.Config.BlockDiffThreshold) && targetHC != nil {
-		targetHC.Taint()
-		h.logger.Warn("RPC provider tainted due to block lag", 
-			"name", updatedRPCName,
-			"blockNumber", updatedBlockNumber,
-			"maxBlock", maxBlock,
-			"diff", diff,
-			"threshold", h.Config.BlockDiffThreshold,
+		targetHC.TaintHealthCheck()
+		h.logger.Warn("Provider tainted due to block difference", 
+			"provider", targetHC.Name(),
+			"blockDiff", diff,
 		)
 	}
 }

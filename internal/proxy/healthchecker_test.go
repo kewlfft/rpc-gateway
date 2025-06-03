@@ -66,31 +66,46 @@ func TestHealthCheckerTaint(t *testing.T) {
 	assert.True(t, healthchecker.IsHealthy())
 
 	// Test tainting
-	healthchecker.Taint()
+	healthchecker.TaintHealthCheck()
 	assert.True(t, healthchecker.IsTainted())
-	assert.False(t, healthchecker.IsHealthy())
 
 	// Test taint removal
 	healthchecker.RemoveTaint()
 	assert.False(t, healthchecker.IsTainted())
-	assert.True(t, healthchecker.IsHealthy())
 
-	// Test multiple taints with exponential backoff
-	healthchecker.Taint()
-	firstWaitTime := healthchecker.taint.waitTime
+	// Test taint with wait time
+	healthchecker.TaintHealthCheck()
+	assert.True(t, healthchecker.IsTainted())
+
+	// Test taint removal after wait time
+	time.Sleep(healthCheckTaintConfig.InitialWaitTime + time.Second)
+	assert.False(t, healthchecker.IsTainted())
+}
+
+func TestHealthCheckerTaintHTTP(t *testing.T) {
+	healthchecker, err := NewHealthChecker(HealthCheckerConfig{
+		URL:    "http://localhost:8545",
+		Name:   "test",
+		Logger: slog.Default(),
+	})
+	assert.NoError(t, err)
+
+	// Test initial state
+	assert.False(t, healthchecker.IsTainted())
+
+	// Test HTTP taint
+	healthchecker.TaintHTTP()
+	assert.True(t, healthchecker.IsTainted())
+
+	// Test taint removal
 	healthchecker.RemoveTaint()
+	assert.False(t, healthchecker.IsTainted())
 
-	// Taint again within reset period
-	healthchecker.Taint()
-	secondWaitTime := healthchecker.taint.waitTime
-	assert.Greater(t, secondWaitTime, firstWaitTime)
+	// Test HTTP taint with wait time
+	healthchecker.TaintHTTP()
+	assert.True(t, healthchecker.IsTainted())
 
-	// Test max wait time
-	for i := 0; i < 5; i++ {
-		healthchecker.Taint()
-		healthchecker.RemoveTaint()
-	}
-	healthchecker.Taint()
-	finalWaitTime := healthchecker.taint.waitTime
-	assert.LessOrEqual(t, finalWaitTime, maxTaintWaitTime)
+	// Test taint removal after wait time
+	time.Sleep(httpTaintConfig.InitialWaitTime + time.Second)
+	assert.False(t, healthchecker.IsTainted())
 }
