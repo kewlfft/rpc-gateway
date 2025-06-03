@@ -31,7 +31,13 @@ type HealthCheckerConfig struct {
 
 	// Minimum consecutive successes required to mark as healthy
 	SuccessThreshold uint `yaml:"healthcheckInterval"`
+
+	// Maximum allowed block difference between providers
+	BlockDiffThreshold uint `yaml:"blockDiffThreshold"`
 }
+
+// BlockNumberUpdateCallback is called when a health checker successfully updates its block number
+type BlockNumberUpdateCallback func(blockNumber uint64)
 
 type HealthChecker struct {
 	client     *rpc.Client
@@ -43,6 +49,9 @@ type HealthChecker struct {
 	blockNumber uint64
 	// gasLeft received from the GasLeft.sol contract call.
 	gasLeft uint64
+
+	// callback function to be called when block number is updated
+	onBlockNumberUpdate BlockNumberUpdateCallback
 
 	mu sync.RWMutex
 }
@@ -112,23 +121,33 @@ func (h *HealthChecker) CheckAndSetHealth() {
 	go h.checkAndSetGasLeftHealth()
 }
 
+// SetBlockNumberUpdateCallback sets the callback function to be called when block number is updated.
+func (h *HealthChecker) SetBlockNumberUpdateCallback(callback BlockNumberUpdateCallback) {
+	h.mu.Lock()
+	h.onBlockNumberUpdate = callback
+	h.mu.Unlock()
+}
+
 func (h *HealthChecker) checkAndSetBlockNumberHealth() {
-	c, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
 	defer cancel()
 
-	// TODO
-	//
-	// This should be moved to a different place, because it does not do a
-	// health checking but it provides additional context.
-
-	blockNumber, err := h.checkBlockNumber(c)
+	blockNumber, err := h.checkBlockNumber(ctx)
 	if err != nil {
+		h.mu.Lock()
+		h.blockNumber = 0
+		h.mu.Unlock()
 		return
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.blockNumber = blockNumber
+	callback := h.onBlockNumberUpdate
+	h.mu.Unlock()
+
+	if callback != nil {
+		callback(blockNumber)
+	}
 }
 
 func (h *HealthChecker) checkAndSetGasLeftHealth() {

@@ -21,6 +21,7 @@ type HealthCheckManagerConfig struct {
 type HealthCheckManager struct {
 	hcs    []*HealthChecker
 	logger *slog.Logger
+	Config HealthCheckConfig
 
 	metricRPCProviderInfo        *prometheus.GaugeVec
 	metricRPCProviderStatus      *prometheus.GaugeVec
@@ -31,6 +32,7 @@ type HealthCheckManager struct {
 func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager, error) {
 	hcm := &HealthCheckManager{
 		logger: config.Logger,
+		Config: config.Config,
 		metricRPCProviderInfo: promauto.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "zeroex_rpc_gateway_provider_info",
@@ -77,6 +79,11 @@ func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager
 		if err != nil {
 			return nil, err
 		}
+
+		// Create a closure that captures the provider name
+		hc.SetBlockNumberUpdateCallback(func(blockNumber uint64) {
+			hcm.checkBlockLagAndTaint(target.Name, blockNumber)
+		})
 
 		hcm.hcs = append(hcm.hcs, hc)
 	}
@@ -141,4 +148,34 @@ func (h *HealthCheckManager) Stop(c context.Context) error {
 	}
 
 	return errs
+}
+
+// checkBlockLagAndTaint checks if a provider's block number is lagging behind others
+func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, updatedBlockNumber uint64) {
+	var maxBlock uint64
+
+	// Single pass: find max block
+	for _, hc := range h.hcs {
+		if bn := hc.BlockNumber(); bn > maxBlock {
+			maxBlock = bn
+		}
+	}
+
+	diff := maxBlock - updatedBlockNumber
+	h.logger.Debug("RPC block comparison",
+		"name", updatedRPCName,
+		"blockNumber", updatedBlockNumber,
+		"maxBlock", maxBlock,
+		"diff", diff,
+		"threshold", h.Config.BlockDiffThreshold,
+	)
+
+	if diff > uint64(h.Config.BlockDiffThreshold) {
+		// TODO: Implement taint functionality
+		h.logger.Warn("RPC provider is lagging behind", 
+			"name", updatedRPCName,
+			"diff", diff,
+			"threshold", h.Config.BlockDiffThreshold,
+		)
+	}
 }
