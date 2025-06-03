@@ -13,7 +13,6 @@ import (
 	"github.com/0xProject/rpc-gateway/internal/proxy"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/httplog/v2"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 )
@@ -115,11 +114,12 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}
 	}
 
-	logger := httplog.NewLogger("rpc-gateway", httplog.Options{
-		JSON:           true,
-		RequestHeaders: true,
-		LogLevel:       logLevel,
-	})
+	// Create a logger that will be used for HTTP request logging
+	httpLogger := slog.New(
+		slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug, // Force DEBUG level for request logging
+		}),
+	)
 
 	hcm, err := proxy.NewHealthCheckManager(
 		proxy.HealthCheckManagerConfig{
@@ -147,7 +147,36 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	}
 
 	r := chi.NewRouter()
-	r.Use(httplog.RequestLogger(logger))
+	// Only add request logger in DEBUG mode
+	if logLevel == slog.LevelDebug {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				start := time.Now()
+				ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+				next.ServeHTTP(ww, r)
+				duration := time.Since(start)
+
+				httpLogger.Debug("Request completed",
+					"service", "rpc-gateway",
+					"httpRequest", map[string]interface{}{
+						"url":      r.URL.String(),
+						"method":   r.Method,
+						"path":     r.URL.Path,
+						"remoteIP": r.RemoteAddr,
+						"proto":    r.Proto,
+						"requestID": r.Header.Get("X-Request-ID"),
+						"scheme":   r.URL.Scheme,
+						"header":   r.Header,
+					},
+					"httpResponse", map[string]interface{}{
+						"status":  ww.Status(),
+						"bytes":   ww.BytesWritten(),
+						"elapsed": duration.Seconds(),
+					},
+				)
+			})
+		})
+	}
 
 	// Recoverer is a middleware that recovers from panics, logs the panic (and
 	// a backtrace), and returns a HTTP 500 (Internal Server Error) status if
