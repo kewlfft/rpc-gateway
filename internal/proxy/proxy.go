@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -15,6 +16,7 @@ type Proxy struct {
 	targets []*NodeProvider
 	hcm     *HealthCheckManager
 	timeout time.Duration
+	logger  *slog.Logger
 
 	metricRequestDuration *prometheus.HistogramVec
 	metricRequestErrors   *prometheus.CounterVec
@@ -24,6 +26,7 @@ func NewProxy(config Config) (*Proxy, error) {
 	proxy := &Proxy{
 		hcm:     config.HealthcheckManager,
 		timeout: config.Proxy.UpstreamTimeout,
+		logger:  config.HealthcheckManager.logger,
 		metricRequestDuration: promauto.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name: "zeroex_rpc_gateway_request_duration_seconds",
@@ -102,15 +105,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := io.Copy(body, r.Body); err != nil {
 		p.errServiceUnavailable(w)
-
 		return
 	}
 
 	for _, target := range p.targets {
 		if !p.hcm.IsHealthy(target.Name()) {
+			p.logger.Debug("Skipping unhealthy provider", "provider", target.Name())
 			continue
 		}
 		start := time.Now()
+
+		p.logger.Debug("Attempting request with provider", 
+			"provider", target.Name(),
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
 
 		pw := NewResponseWriter()
 		r.Body = io.NopCloser(bytes.NewBuffer(body.Bytes()))
@@ -122,10 +131,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Observe(time.Since(start).Seconds())
 			p.metricRequestErrors.WithLabelValues(target.Name(), "rerouted").Inc()
 
+			p.logger.Debug("Request failed, trying next provider", 
+				"provider", target.Name(),
+				"status", pw.statusCode,
+			)
 			continue
 		}
-		p.copyHeaders(w, pw)
 
+		p.logger.Debug("Request successful with provider", 
+			"provider", target.Name(),
+			"status", pw.statusCode,
+			"duration", time.Since(start),
+		)
+
+		p.copyHeaders(w, pw)
 		w.WriteHeader(pw.statusCode)
 		w.Write(pw.body.Bytes()) // nolint:errcheck
 
@@ -135,5 +154,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	p.logger.Debug("No healthy providers available")
 	p.errServiceUnavailable(w)
 }
