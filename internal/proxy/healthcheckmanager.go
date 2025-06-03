@@ -2,12 +2,10 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
 
-	"github.com/hashicorp/go-multierror"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -134,20 +132,34 @@ func (h *HealthCheckManager) Start(c context.Context) error {
 		go hc.Start(c)
 	}
 
-	return h.runLoop(c)
+	// Run the main loop in a goroutine
+	go func() {
+		ticker := time.NewTicker(time.Second * 1)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-c.Done():
+				return
+			case <-ticker.C:
+				h.reportStatusMetrics()
+			}
+		}
+	}()
+
+	return nil
 }
 
 func (h *HealthCheckManager) Stop(c context.Context) error {
-	var errs error
-
-	for _, hc := range h.hcs {
-		err := hc.Stop(c)
-		if err != nil {
-			errs = multierror.Append(errs, fmt.Errorf("healthcheckManager.Stop error: %w", err))
+	slog.Info("stopping health check manager")
+	
+	for _, checker := range h.hcs {
+		if err := checker.Stop(c); err != nil {
+			slog.Error("error stopping health checker", "name", checker.Name(), "error", err)
 		}
 	}
 
-	return errs
+	return nil
 }
 
 // checkBlockLagAndTaint checks if a provider's block number is lagging behind others

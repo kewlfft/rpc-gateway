@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/0xProject/rpc-gateway/internal/metrics"
 	"github.com/0xProject/rpc-gateway/internal/proxy"
-	"github.com/carlmjohnson/flowmatic"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httplog/v2"
@@ -31,31 +31,76 @@ func (r *RPCGateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *RPCGateway) Start(c context.Context) error {
-	return flowmatic.Do(
-		func() error {
-			return errors.Wrap(r.hcm.Start(c), "failed to start health check manager")
-		},
-		func() error {
-			return errors.Wrap(r.server.ListenAndServe(), "failed to start rpc-gateway")
-		},
-		func() error {
-			return errors.Wrap(r.metrics.Start(), "failed to start metrics server")
-		},
-	)
+	// Check if ports are available
+	if err := checkPortAvailability(r.config.Proxy.Port); err != nil {
+		return errors.Wrap(err, "rpc-gateway port not available")
+	}
+	if err := checkPortAvailability(fmt.Sprintf("%d", r.config.Metrics.Port)); err != nil {
+		return errors.Wrap(err, "metrics port not available")
+	}
+
+	// Start health check manager first
+	if err := r.hcm.Start(c); err != nil {
+		return errors.Wrap(err, "failed to start health check manager")
+	}
+
+	// Start metrics server in a goroutine
+	go func() {
+		if err := r.metrics.Start(); err != nil {
+			if errors.Is(err, http.ErrServerClosed) {
+				slog.Info("metrics server closed")
+			} else {
+				slog.Error("metrics server error", "error", err)
+			}
+		}
+	}()
+
+	// Start main server in a goroutine
+	go func() {
+		if err := r.server.ListenAndServe(); err != nil {
+			if errors.Is(err, http.ErrServerClosed) {
+				slog.Info("rpc-gateway server closed")
+			} else {
+				slog.Error("rpc-gateway server error", "error", err)
+			}
+		}
+	}()
+
+	return nil
+}
+
+// checkPortAvailability checks if a port is available for use
+func checkPortAvailability(port string) error {
+	addr := fmt.Sprintf(":%s", port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("port %s is not available: %w", port, err)
+	}
+	ln.Close()
+	return nil
 }
 
 func (r *RPCGateway) Stop(c context.Context) error {
-	return flowmatic.Do(
-		func() error {
-			return errors.Wrap(r.hcm.Stop(c), "failed to stop health check manager")
-		},
-		func() error {
-			return errors.Wrap(r.server.Close(), "failed to stop rpc-gateway")
-		},
-		func() error {
-			return errors.Wrap(r.metrics.Stop(), "failed to stop metrics server")
-		},
-	)
+	// Stop servers in reverse order of dependency
+	slog.Info("shutting down rpc-gateway")
+
+	// Stop main server
+	if err := r.server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("error stopping rpc-gateway server", "error", err)
+	}
+
+	// Stop metrics server
+	if err := r.metrics.Stop(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("error stopping metrics server", "error", err)
+	}
+
+	// Stop health check manager last
+	if err := r.hcm.Stop(c); err != nil {
+		slog.Error("error stopping health check manager", "error", err)
+	}
+
+	slog.Info("rpc-gateway shutdown complete")
+	return nil
 }
 
 func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {

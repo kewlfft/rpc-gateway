@@ -9,48 +9,42 @@ import (
 	"syscall"
 
 	"github.com/0xProject/rpc-gateway/internal/rpcgateway"
-	"github.com/carlmjohnson/flowmatic"
-	"github.com/pkg/errors"
-	"github.com/urfave/cli/v2"
 )
 
 func main() {
-	c, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	app := &cli.App{
-		Name:  "rpc-gateway",
-		Usage: "The failover proxy for node providers.",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:     "config",
-				Usage:    "The configuration file path.",
-				Required: true,
-			},
-		},
-		Action: func(cc *cli.Context) error {
-			configPath := cc.String("config")
-			slog.Info("starting rpc-gateway", "config", configPath)
-
-			service, err := rpcgateway.NewRPCGatewayFromConfigFile(configPath)
-			if err != nil {
-				return errors.Wrap(err, "rpc-gateway failed")
-			}
-
-			return flowmatic.Do(
-				func() error {
-					return errors.Wrap(service.Start(c), "cannot start a service")
-				},
-				func() error {
-					<-c.Done()
-
-					return errors.Wrap(service.Stop(c), "cannot stop a service")
-				},
-			)
-		},
+	if len(os.Args) != 3 || os.Args[1] != "--config" {
+		fmt.Fprintf(os.Stderr, "Usage: %s --config <config-file>\n", os.Args[0])
+		os.Exit(1)
 	}
 
-	if err := app.Run(os.Args); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v", err)
+	configPath := os.Args[2]
+	slog.Info("starting rpc-gateway", "config", configPath)
+
+	service, err := rpcgateway.NewRPCGatewayFromConfigFile(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
+
+	// Create a channel to receive the signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Create a context that we can cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := service.Start(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	<-sigChan
+	slog.Info("received shutdown signal")
+	
+	// Cancel the context to stop all background operations
+	cancel()
+	
+	service.Stop(ctx)
+	os.Exit(0)
 }
