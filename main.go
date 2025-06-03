@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,7 +29,10 @@ func main() {
 			},
 		},
 		Action: func(cc *cli.Context) error {
-			service, err := rpcgateway.NewRPCGatewayFromConfigFile(cc.String("config"))
+			configPath := cc.String("config")
+			slog.Info("starting rpc-gateway", "config", configPath)
+
+			service, err := rpcgateway.NewRPCGatewayFromConfigFile(configPath)
 			if err != nil {
 				return errors.Wrap(err, "rpc-gateway failed")
 			}

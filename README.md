@@ -30,7 +30,10 @@ go test -v ./...
 
 To run the app locally
 ```console
-DEBUG=true go run . --config example_config.yml
+# Set log level (optional, defaults to "warn")
+export LOG_LEVEL=debug  # Available levels: debug, info, warn, error
+
+go run . --config example_config.yml
 ```
 
 ## Configuration

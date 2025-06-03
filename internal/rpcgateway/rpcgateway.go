@@ -60,8 +60,22 @@ func (r *RPCGateway) Stop(c context.Context) error {
 
 func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	logLevel := slog.LevelWarn
-	if os.Getenv("DEBUG") == "true" {
-		logLevel = slog.LevelDebug
+
+	// Set log level based on LOG_LEVEL environment variable
+	if logLevelStr := os.Getenv("LOG_LEVEL"); logLevelStr != "" {
+		switch logLevelStr {
+		case "debug":
+			logLevel = slog.LevelDebug
+		case "info":
+			logLevel = slog.LevelInfo
+		case "warn":
+			logLevel = slog.LevelWarn
+		case "error":
+			logLevel = slog.LevelError
+		default:
+			// If invalid level is provided, use warn as default
+			logLevel = slog.LevelWarn
+		}
 	}
 
 	logger := httplog.NewLogger("rpc-gateway", httplog.Options{
