@@ -13,7 +13,20 @@ import (
 
 const (
 	userAgent = "rpc-gateway-health-check"
+	
+	// Taint configuration
+	initialTaintWaitTime = time.Second * 30
+	maxTaintWaitTime = time.Minute * 10
+	resetTaintWaitTimeAfterDuration = time.Minute * 5
 )
+
+// TaintState represents the current state of a health checker
+type TaintState struct {
+	isTainted bool
+	lastRemoval time.Time
+	waitTime time.Duration
+	removalTimer *time.Timer
+}
 
 type HealthCheckerConfig struct {
 	URL    string
@@ -50,6 +63,9 @@ type HealthChecker struct {
 	// gasLeft received from the GasLeft.sol contract call.
 	gasLeft uint64
 
+	// Taint state
+	taint TaintState
+
 	// callback function to be called when block number is updated
 	onBlockNumberUpdate BlockNumberUpdateCallback
 
@@ -71,6 +87,9 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		config:     config,
 		blockNumber: 1,
 		gasLeft:    1,
+		taint: TaintState{
+			waitTime: initialTaintWaitTime,
+		},
 	}
 
 	return healthchecker, nil
@@ -181,7 +200,15 @@ func (h *HealthChecker) Start(c context.Context) {
 }
 
 func (h *HealthChecker) Stop(_ context.Context) error {
-	// TODO: Additional cleanups?
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Clean up taint removal timer
+	if h.taint.removalTimer != nil {
+		h.taint.removalTimer.Stop()
+		h.taint.removalTimer = nil
+	}
+
 	return nil
 }
 
@@ -189,7 +216,71 @@ func (h *HealthChecker) IsHealthy() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	return h.blockNumber > 0 && h.gasLeft > 0
+	// If tainted, always return unhealthy
+	if h.taint.isTainted {
+		return false
+	}
+
+	// Consider healthy if both gasLeft and blockNumber are positive
+	return h.gasLeft > 0 && h.blockNumber > 0
+}
+
+func (h *HealthChecker) IsTainted() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.taint.isTainted
+}
+
+func (h *HealthChecker) Taint() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.taint.isTainted {
+		return
+	}
+
+	// Calculate new wait time
+	if time.Since(h.taint.lastRemoval) <= resetTaintWaitTimeAfterDuration {
+		h.taint.waitTime *= 2
+		if h.taint.waitTime > maxTaintWaitTime {
+			h.taint.waitTime = maxTaintWaitTime
+		}
+	} else {
+		h.taint.waitTime = initialTaintWaitTime
+	}
+
+	// Stop any existing removal timer
+	if h.taint.removalTimer != nil {
+		h.taint.removalTimer.Stop()
+	}
+
+	// Set taint state
+	h.taint.isTainted = true
+	h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, h.RemoveTaint)
+
+	h.logger.Info("RPC provider tainted", 
+		"name", h.config.Name,
+		"waitTime", h.taint.waitTime,
+		"nextRemoval", time.Now().Add(h.taint.waitTime),
+	)
+}
+
+func (h *HealthChecker) RemoveTaint() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	
+	if !h.taint.isTainted {
+		return
+	}
+
+	h.taint.isTainted = false
+	h.taint.lastRemoval = time.Now()
+	h.taint.removalTimer = nil
+	
+	h.logger.Info("RPC provider taint removed", 
+		"name", h.config.Name,
+		"nextTaintWait", h.taint.waitTime,
+	)
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {

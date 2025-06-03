@@ -18,6 +18,7 @@ type HealthCheckManagerConfig struct {
 
 type HealthCheckManager struct {
 	hcs    []*HealthChecker
+	hcMap  map[string]*HealthChecker // Map for O(1) lookup by name
 	logger *slog.Logger
 	Config HealthCheckConfig
 
@@ -31,6 +32,7 @@ func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager
 	hcm := &HealthCheckManager{
 		logger: config.Logger,
 		Config: config.Config,
+		hcMap:  make(map[string]*HealthChecker),
 		metricRPCProviderInfo: promauto.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "zeroex_rpc_gateway_provider_info",
@@ -84,6 +86,7 @@ func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager
 		})
 
 		hcm.hcs = append(hcm.hcs, hc)
+		hcm.hcMap[target.Name] = hc
 	}
 
 	return hcm, nil
@@ -115,15 +118,30 @@ func (h *HealthCheckManager) IsHealthy(name string) bool {
 
 func (h *HealthCheckManager) reportStatusMetrics() {
 	for _, hc := range h.hcs {
-		if hc.IsHealthy() {
-			h.metricRPCProviderStatus.WithLabelValues(hc.Name(), "healthy").Set(1)
-		} else {
-			h.metricRPCProviderStatus.WithLabelValues(hc.Name(), "healthy").Set(0)
-		}
+		name := hc.Name()
+		isHealthy := hc.IsHealthy()
+		isTainted := hc.IsTainted()
 
-		h.metricRPCProviderGasLeft.WithLabelValues(hc.Name()).Set(float64(hc.BlockNumber()))
-		h.metricRPCProviderBlockNumber.WithLabelValues(hc.Name()).Set(float64(hc.BlockNumber()))
+		// Update health status metric
+		h.metricRPCProviderStatus.WithLabelValues(name, "healthy").Set(boolToFloat64(isHealthy))
+		
+		// Update taint status metric
+		h.metricRPCProviderStatus.WithLabelValues(name, "tainted").Set(boolToFloat64(isTainted))
+
+		// Only update block and gas metrics if healthy and not tainted
+		if isHealthy && !isTainted {
+			h.metricRPCProviderGasLeft.WithLabelValues(name).Set(float64(hc.GasLeft()))
+			h.metricRPCProviderBlockNumber.WithLabelValues(name).Set(float64(hc.BlockNumber()))
+		}
 	}
+}
+
+// boolToFloat64 converts a boolean to float64 (1.0 for true, 0.0 for false)
+func boolToFloat64(b bool) float64 {
+	if b {
+		return 1.0
+	}
+	return 0.0
 }
 
 func (h *HealthCheckManager) Start(c context.Context) error {
@@ -165,11 +183,15 @@ func (h *HealthCheckManager) Stop(c context.Context) error {
 // checkBlockLagAndTaint checks if a provider's block number is lagging behind others
 func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, updatedBlockNumber uint64) {
 	var maxBlock uint64
+	var targetHC *HealthChecker
 
-	// Single pass: find max block
+	// Single pass: find max block and target health checker
 	for _, hc := range h.hcs {
 		if bn := hc.BlockNumber(); bn > maxBlock {
 			maxBlock = bn
+		}
+		if hc.Name() == updatedRPCName {
+			targetHC = hc
 		}
 	}
 
@@ -182,10 +204,12 @@ func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, update
 		"threshold", h.Config.BlockDiffThreshold,
 	)
 
-	if diff > uint64(h.Config.BlockDiffThreshold) {
-		// TODO: Implement taint functionality
-		h.logger.Warn("RPC provider is lagging behind", 
+	if diff > uint64(h.Config.BlockDiffThreshold) && targetHC != nil {
+		targetHC.Taint()
+		h.logger.Warn("RPC provider tainted due to block lag", 
 			"name", updatedRPCName,
+			"blockNumber", updatedBlockNumber,
+			"maxBlock", maxBlock,
 			"diff", diff,
 			"threshold", h.Config.BlockDiffThreshold,
 		)
