@@ -41,8 +41,8 @@ type HealthChecker struct {
 
 	// latest known blockNumber from the RPC.
 	blockNumber uint64
-	// gasLimit received from the GasLeft.sol contract call.
-	gasLimit uint64
+	// gasLeft received from the GasLeft.sol contract call.
+	gasLeft uint64
 
 	// is the ethereum RPC node healthy according to the RPCHealthchecker
 	isHealthy bool
@@ -89,25 +89,25 @@ func (h *HealthChecker) checkBlockNumber(c context.Context) (uint64, error) {
 	return uint64(blockNumber), nil
 }
 
-// checkGasLimit performs an `eth_call` with a GasLeft.sol contract call. We also
+// checkGasLeft performs an `eth_call` with a GasLeft.sol contract call. We also
 // want to perform an eth_call to make sure eth_call requests are also succeding
 // as blockNumber can be either cached or routed to a different service on the
 // RPC provider's side.
-func (h *HealthChecker) checkGasLimit(c context.Context) (uint64, error) {
-	gasLimit, err := performGasLeftCall(c, h.httpClient, h.config.URL)
+func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
+	gasLeft, err := performGasLeftCall(c, h.httpClient, h.config.URL)
 	if err != nil {
-		h.logger.Error("could not fetch gas limit", "error", err)
+		h.logger.Error("could not fetch gas left", "error", err)
 
-		return gasLimit, err
+		return gasLeft, err
 	}
-	h.logger.Debug("fetch gas limit completed", "gasLimit", gasLimit)
+	h.logger.Debug("fetch gas left completed", "gasLeft", gasLeft)
 
-	return gasLimit, nil
+	return gasLeft, nil
 }
 
 // CheckAndSetHealth makes the following calls
 // - `eth_blockNumber` - to get the latest block reported by the node
-// - `eth_call` - to get the gas limit
+// - `eth_call` - to get the gas left
 // And sets the health status based on the responses.
 func (h *HealthChecker) CheckAndSetHealth() {
 	go h.checkAndSetBlockNumberHealth()
@@ -137,7 +137,7 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	c, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
 	defer cancel()
 
-	gasLimit, err := h.checkGasLimit(c)
+	gasLeft, err := h.checkGasLeft(c)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err != nil {
@@ -145,7 +145,7 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 
 		return
 	}
-	h.gasLimit = gasLimit
+	h.gasLeft = gasLeft
 	h.isHealthy = true
 }
 
@@ -184,9 +184,9 @@ func (h *HealthChecker) BlockNumber() uint64 {
 	return h.blockNumber
 }
 
-func (h *HealthChecker) GasLimit() uint64 {
+func (h *HealthChecker) GasLeft() uint64 {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	return h.gasLimit
+	return h.gasLeft
 }

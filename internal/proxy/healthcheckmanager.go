@@ -25,7 +25,7 @@ type HealthCheckManager struct {
 	metricRPCProviderInfo        *prometheus.GaugeVec
 	metricRPCProviderStatus      *prometheus.GaugeVec
 	metricRPCProviderBlockNumber *prometheus.GaugeVec
-	metricRPCProviderGasLimit    *prometheus.GaugeVec
+	metricRPCProviderGasLeft    *prometheus.GaugeVec
 }
 
 func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager, error) {
@@ -54,10 +54,10 @@ func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager
 			}, []string{
 				"provider",
 			}),
-		metricRPCProviderGasLimit: promauto.NewGaugeVec(
+		metricRPCProviderGasLeft: promauto.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "zeroex_rpc_gateway_provider_gasLimit_number",
-				Help: "Gas limit of a given provider",
+				Name: "zeroex_rpc_gateway_provider_gasLeft_number",
+				Help: "Gas left of a given provider",
 			}, []string{
 				"provider",
 			}),
@@ -116,7 +116,7 @@ func (h *HealthCheckManager) reportStatusMetrics() {
 			h.metricRPCProviderStatus.WithLabelValues(hc.Name(), "healthy").Set(0)
 		}
 
-		h.metricRPCProviderGasLimit.WithLabelValues(hc.Name()).Set(float64(hc.BlockNumber()))
+		h.metricRPCProviderGasLeft.WithLabelValues(hc.Name()).Set(float64(hc.BlockNumber()))
 		h.metricRPCProviderBlockNumber.WithLabelValues(hc.Name()).Set(float64(hc.BlockNumber()))
 	}
 }
