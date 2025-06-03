@@ -12,6 +12,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Duration is a custom type that implements slog.LogValuer for better duration formatting
+type Duration time.Duration
+
+func (d Duration) LogValue() slog.Value {
+	return slog.StringValue(time.Duration(d).String())
+}
+
 type Proxy struct {
 	targets []*NodeProvider
 	hcm     *HealthCheckManager
@@ -101,12 +108,14 @@ func (p *Proxy) errServiceUnavailable(w http.ResponseWriter) {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body := &bytes.Buffer{}
-
-	if _, err := io.Copy(body, r.Body); err != nil {
+	// Read body once and store it
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		p.logger.Error("Failed to read request body", "error", err)
 		p.errServiceUnavailable(w)
 		return
 	}
+	defer r.Body.Close()
 
 	for _, target := range p.targets {
 		if !p.hcm.IsHealthy(target.Name()) {
@@ -122,7 +131,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		)
 
 		pw := NewResponseWriter()
-		r.Body = io.NopCloser(bytes.NewBuffer(body.Bytes()))
+		// Reuse the same body bytes for each attempt
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 		p.timeoutHandler(target).ServeHTTP(pw, r)
 
@@ -138,10 +148,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		duration := time.Since(start)
 		p.logger.Debug("Request successful with provider", 
 			"provider", target.Name(),
 			"status", pw.statusCode,
-			"duration", time.Since(start),
+			"duration", Duration(duration),
 		)
 
 		p.copyHeaders(w, pw)
@@ -149,7 +160,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write(pw.body.Bytes()) // nolint:errcheck
 
 		p.metricRequestDuration.WithLabelValues(target.Name(), r.Method, strconv.Itoa(pw.statusCode)).
-			Observe(time.Since(start).Seconds())
+			Observe(duration.Seconds())
 
 		return
 	}
