@@ -12,6 +12,7 @@ healthChecks:
   timeout: "1s" # when should the timeout occur and considered unhealthy
   failureThreshold: 2 # how many failed checks until marked as unhealthy
   successThreshold: 1 # how many successes to be marked as healthy again
+  blockDiffThreshold: 2 # maximum allowed block difference between providers
 
 targets:
   - name: "Ankr"

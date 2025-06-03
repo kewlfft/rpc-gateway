@@ -51,6 +51,7 @@ healthChecks:
   timeout: "1s" # when should the timeout occur and considered unhealthy
   failureThreshold: 2 # how many failed checks until marked as unhealthy
   successThreshold: 1 # how many successes to be marked as healthy again
+  blockDiffThreshold: 10 # maximum allowed difference between current and latest block number
 
 targets: # the order here determines the failover order
   - name: "publicnode"

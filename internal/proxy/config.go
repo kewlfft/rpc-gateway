@@ -5,10 +5,11 @@ import (
 )
 
 type HealthCheckConfig struct {
-	Interval         time.Duration `yaml:"interval"`
-	Timeout          time.Duration `yaml:"timeout"`
-	FailureThreshold uint          `yaml:"failureThreshold"`
-	SuccessThreshold uint          `yaml:"successThreshold"`
+	Interval           time.Duration `yaml:"interval"`
+	Timeout           time.Duration `yaml:"timeout"`
+	FailureThreshold  uint          `yaml:"failureThreshold"`
+	SuccessThreshold  uint          `yaml:"successThreshold"`
+	BlockDiffThreshold uint64       `yaml:"blockDiffThreshold"`
 }
 
 type ProxyConfig struct { // nolint:revive
