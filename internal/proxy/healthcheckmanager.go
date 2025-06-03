@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -26,6 +27,15 @@ type HealthCheckManager struct {
 	metricRPCProviderStatus      *prometheus.GaugeVec
 	metricRPCProviderBlockNumber *prometheus.GaugeVec
 	metricRPCProviderGasLeft    *prometheus.GaugeVec
+
+	// Cache for last reported values with RWMutex for better read performance
+	lastReportedValues struct {
+		sync.RWMutex
+		healthy map[string]bool
+		tainted map[string]bool
+		block   map[string]uint64
+		gas     map[string]uint64
+	}
 }
 
 func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager, error) {
@@ -64,6 +74,12 @@ func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager
 				"provider",
 			}),
 	}
+
+	// Initialize the cache maps
+	hcm.lastReportedValues.healthy = make(map[string]bool)
+	hcm.lastReportedValues.tainted = make(map[string]bool)
+	hcm.lastReportedValues.block = make(map[string]uint64)
+	hcm.lastReportedValues.gas = make(map[string]uint64)
 
 	for _, target := range config.Targets {
 		hc, err := NewHealthChecker(
@@ -117,21 +133,81 @@ func (h *HealthCheckManager) IsHealthy(name string) bool {
 }
 
 func (h *HealthCheckManager) reportStatusMetrics() {
+	// Use read lock for initial value checks
+	h.lastReportedValues.RLock()
+	updates := make(map[string]struct {
+		healthy bool
+		tainted bool
+		block   uint64
+		gas     uint64
+		changed bool
+	})
+
+	// First pass: collect all values and check what needs updating
 	for _, hc := range h.hcs {
 		name := hc.Name()
 		isHealthy := hc.IsHealthy()
 		isTainted := hc.IsTainted()
+		blockNumber := hc.BlockNumber()
+		gasLeft := hc.GasLeft()
 
-		// Update health status metric
-		h.metricRPCProviderStatus.WithLabelValues(name, "healthy").Set(boolToFloat64(isHealthy))
-		
-		// Update taint status metric
-		h.metricRPCProviderStatus.WithLabelValues(name, "tainted").Set(boolToFloat64(isTainted))
+		needsUpdate := false
+		if h.lastReportedValues.healthy[name] != isHealthy ||
+			h.lastReportedValues.tainted[name] != isTainted {
+			needsUpdate = true
+		}
 
-		// Only update block and gas metrics if healthy and not tainted
+		// Only check block and gas if healthy and not tainted
 		if isHealthy && !isTainted {
-			h.metricRPCProviderGasLeft.WithLabelValues(name).Set(float64(hc.GasLeft()))
-			h.metricRPCProviderBlockNumber.WithLabelValues(name).Set(float64(hc.BlockNumber()))
+			if h.lastReportedValues.block[name] != blockNumber ||
+				h.lastReportedValues.gas[name] != gasLeft {
+				needsUpdate = true
+			}
+		}
+
+		if needsUpdate {
+			updates[name] = struct {
+				healthy bool
+				tainted bool
+				block   uint64
+				gas     uint64
+				changed bool
+			}{
+				healthy: isHealthy,
+				tainted: isTainted,
+				block:   blockNumber,
+				gas:     gasLeft,
+				changed: true,
+			}
+		}
+	}
+	h.lastReportedValues.RUnlock()
+
+	// If no updates needed, return early
+	if len(updates) == 0 {
+		return
+	}
+
+	// Use write lock only for actual updates
+	h.lastReportedValues.Lock()
+	defer h.lastReportedValues.Unlock()
+
+	// Apply all updates
+	for name, update := range updates {
+		if update.changed {
+			// Update status metrics
+			h.metricRPCProviderStatus.WithLabelValues(name, "healthy").Set(boolToFloat64(update.healthy))
+			h.metricRPCProviderStatus.WithLabelValues(name, "tainted").Set(boolToFloat64(update.tainted))
+			h.lastReportedValues.healthy[name] = update.healthy
+			h.lastReportedValues.tainted[name] = update.tainted
+
+			// Update block and gas metrics if healthy and not tainted
+			if update.healthy && !update.tainted {
+				h.metricRPCProviderBlockNumber.WithLabelValues(name).Set(float64(update.block))
+				h.metricRPCProviderGasLeft.WithLabelValues(name).Set(float64(update.gas))
+				h.lastReportedValues.block[name] = update.block
+				h.lastReportedValues.gas[name] = update.gas
+			}
 		}
 	}
 }
