@@ -46,23 +46,15 @@ func (r *RPCGateway) Start(c context.Context) error {
 
 	// Start metrics server in a goroutine
 	go func() {
-		if err := r.metrics.Start(); err != nil {
-			if errors.Is(err, http.ErrServerClosed) {
-				slog.Info("metrics server closed")
-			} else {
-				slog.Error("metrics server error", "error", err)
-			}
+		if err := r.metrics.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics server error", "error", err)
 		}
 	}()
 
 	// Start main server in a goroutine
 	go func() {
-		if err := r.server.ListenAndServe(); err != nil {
-			if errors.Is(err, http.ErrServerClosed) {
-				slog.Info("rpc-gateway server closed")
-			} else {
-				slog.Error("rpc-gateway server error", "error", err)
-			}
+		if err := r.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("rpc-gateway server error", "error", err)
 		}
 	}()
 

@@ -34,17 +34,21 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Handle shutdown signal in a separate goroutine
+	go func() {
+		<-sigChan
+		slog.Info("received shutdown signal")
+		cancel()
+	}()
+
 	if err := service.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	<-sigChan
-	slog.Info("received shutdown signal")
+	// Wait for context cancellation
+	<-ctx.Done()
 	
-	// Cancel the context to stop all background operations
-	cancel()
-	
-	service.Stop(ctx)
-	os.Exit(0)
+	// Use a fresh context for shutdown
+	service.Stop(context.Background())
 }
