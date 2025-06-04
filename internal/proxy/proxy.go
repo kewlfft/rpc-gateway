@@ -106,22 +106,12 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 		statusCode == http.StatusServiceUnavailable
 }
 
-// copyHeaders copies headers from src to dst
+// copyHeaders copies all headers from src to dst without duplicating Content-* logic
 func (p *Proxy) copyHeaders(dst http.ResponseWriter, src http.Header) {
-	// Handle common headers first
-	if ct := src.Get("Content-Type"); ct != "" {
-		dst.Header().Set("Content-Type", ct)
-	}
-	if cl := src.Get("Content-Length"); cl != "" {
-		dst.Header().Set("Content-Length", cl)
-	}
-	
-	// Copy remaining headers
-	for k, v := range src {
-		if k != "Content-Type" && k != "Content-Length" {
-			for _, val := range v {
-				dst.Header().Add(k, val)
-			}
+	dstHeader := dst.Header()
+	for k, values := range src {
+		for _, v := range values {
+			dstHeader.Add(k, v)
 		}
 	}
 }
