@@ -44,6 +44,8 @@ metrics:
 
 proxy:
   port: "3000" # port for RPC gateway
+  path: "eth"  # optional directory path for the proxy (e.g. http://localhost:3000/eth)
+              # if not specified, proxy will be served at root path (http://localhost:3000)
   upstreamTimeout: "1s" # when is a request considered timed out
 
 healthChecks:
@@ -63,3 +65,12 @@ targets: # the order here determines the failover order
       http:
         url: "https://alchemy.com/rpc/<apikey>"
 ```
+
+### Path Configuration
+
+The `path` option in the proxy configuration allows you to specify a directory path for the RPC gateway. This is useful when you want to run multiple proxies on the same port:
+
+- With path configured (e.g., `path: "eth"`): The proxy will be accessible at `http://localhost:3000/eth`
+- Without path configured: The proxy will be accessible at `http://localhost:3000`
+
+This feature enables you to run multiple RPC gateways on the same port by configuring different paths for each instance, making it easier to manage multiple blockchain networks or different configurations.
