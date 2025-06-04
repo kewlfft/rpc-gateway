@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,9 +20,7 @@ import (
 
 func createConfig() Config {
 	return Config{
-		Proxy: ProxyConfig{
-			UpstreamTimeout: time.Second * 3,
-		},
+		UpstreamTimeout: time.Second * 3,
 		HealthChecks: HealthCheckConfig{
 			Interval:         0,
 			Timeout:          0,
@@ -51,35 +50,34 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 	rpcGatewayConfig.Targets = []NodeProviderConfig{
 		{
 			Name: "Server1",
-			Connection: NodeProviderConnectionConfig{
-				HTTP: NodeProviderConnectionHTTPConfig{
-					URL: fakeRPC1Server.URL,
-				},
-			},
+			Connection: struct {
+				HTTP struct {
+					URL         string `yaml:"url"`
+					Compression bool   `yaml:"compression"`
+				} `yaml:"http"`
+			}{HTTP: struct {
+				URL         string `yaml:"url"`
+				Compression bool   `yaml:"compression"`
+			}{URL: fakeRPC1Server.URL}},
 		},
 		{
 			Name: "Server2",
-			Connection: NodeProviderConnectionConfig{
-				HTTP: NodeProviderConnectionHTTPConfig{
-					URL: fakeRPC2Server.URL,
-				},
-			},
+			Connection: struct {
+				HTTP struct {
+					URL         string `yaml:"url"`
+					Compression bool   `yaml:"compression"`
+				} `yaml:"http"`
+			}{HTTP: struct {
+				URL         string `yaml:"url"`
+				Compression bool   `yaml:"compression"`
+			}{URL: fakeRPC2Server.URL}},
 		},
 	}
-	healthcheckManager, err := NewHealthCheckManager(HealthCheckManagerConfig{
-		Targets: rpcGatewayConfig.Targets,
-		Config:  rpcGatewayConfig.HealthChecks,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	})
-	assert.NoError(t, err)
-	assert.NotNil(t, healthcheckManager)
-
-	rpcGatewayConfig.HealthcheckManager = healthcheckManager
+	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
-	// the failoverProxy should automatically reroute the request to the second RPC Server by itself
-	httpFailoverProxy, err := NewProxy(rpcGatewayConfig)
+	httpFailoverProxy, err := NewProxy(context.Background(), rpcGatewayConfig)
 	assert.NoError(t, err)
 	assert.NotNil(t, httpFailoverProxy)
 
@@ -116,26 +114,22 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 	rpcGatewayConfig.Targets = []NodeProviderConfig{
 		{
 			Name: "Server1",
-			Connection: NodeProviderConnectionConfig{
-				HTTP: NodeProviderConnectionHTTPConfig{
-					URL: fakeRPC1Server.URL,
-				},
-			},
+			Connection: struct {
+				HTTP struct {
+					URL         string `yaml:"url"`
+					Compression bool   `yaml:"compression"`
+				} `yaml:"http"`
+			}{HTTP: struct {
+				URL         string `yaml:"url"`
+				Compression bool   `yaml:"compression"`
+			}{URL: fakeRPC1Server.URL}},
 		},
 	}
+	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	healthcheckManager, err := NewHealthCheckManager(HealthCheckManagerConfig{
-		Targets: rpcGatewayConfig.Targets,
-		Config:  rpcGatewayConfig.HealthChecks,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	})
-	assert.NotNil(t, healthcheckManager)
-	assert.NoError(t, err)
-
-	rpcGatewayConfig.HealthcheckManager = healthcheckManager
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
-	httpFailoverProxy, err := NewProxy(rpcGatewayConfig)
+	httpFailoverProxy, err := NewProxy(context.Background(), rpcGatewayConfig)
 	assert.NotNil(t, httpFailoverProxy)
 	assert.NoError(t, err)
 
@@ -176,27 +170,22 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 	rpcGatewayConfig.Targets = []NodeProviderConfig{
 		{
 			Name: "Server1",
-			Connection: NodeProviderConnectionConfig{
-				HTTP: NodeProviderConnectionHTTPConfig{
-					URL:         fakeRPC1Server.URL,
-					Compression: true,
-				},
-			},
+			Connection: struct {
+				HTTP struct {
+					URL         string `yaml:"url"`
+					Compression bool   `yaml:"compression"`
+				} `yaml:"http"`
+			}{HTTP: struct {
+				URL         string `yaml:"url"`
+				Compression bool   `yaml:"compression"`
+			}{URL: fakeRPC1Server.URL, Compression: true}},
 		},
 	}
+	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	healthcheckManager, err := NewHealthCheckManager(HealthCheckManagerConfig{
-		Targets: rpcGatewayConfig.Targets,
-		Config:  rpcGatewayConfig.HealthChecks,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	})
-	assert.NotNil(t, healthcheckManager)
-	assert.NoError(t, err)
-
-	rpcGatewayConfig.HealthcheckManager = healthcheckManager
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
-	httpFailoverProxy, err := NewProxy(rpcGatewayConfig)
+	httpFailoverProxy, err := NewProxy(context.Background(), rpcGatewayConfig)
 	assert.NotNil(t, httpFailoverProxy)
 	assert.NoError(t, err)
 
@@ -239,38 +228,36 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 	rpcGatewayConfig.Targets = []NodeProviderConfig{
 		{
 			Name: "Server1",
-			Connection: NodeProviderConnectionConfig{
-				HTTP: NodeProviderConnectionHTTPConfig{
-					// This service should not exist at all.
-					//
-					URL: "http://foo.bar",
-				},
-			},
+			Connection: struct {
+				HTTP struct {
+					URL         string `yaml:"url"`
+					Compression bool   `yaml:"compression"`
+				} `yaml:"http"`
+			}{HTTP: struct {
+				URL         string `yaml:"url"`
+				Compression bool   `yaml:"compression"`
+			}{URL: "http://foo.bar"}},
 		},
 		{
 			Name: "Server2",
-			Connection: NodeProviderConnectionConfig{
-				HTTP: NodeProviderConnectionHTTPConfig{
-					URL: fakeRPCServer.URL,
-				},
-			},
+			Connection: struct {
+				HTTP struct {
+					URL         string `yaml:"url"`
+					Compression bool   `yaml:"compression"`
+				} `yaml:"http"`
+			}{HTTP: struct {
+				URL         string `yaml:"url"`
+				Compression bool   `yaml:"compression"`
+			}{URL: fakeRPCServer.URL}},
 		},
 	}
-	healthcheckManager, err := NewHealthCheckManager(HealthCheckManagerConfig{
-		Targets: rpcGatewayConfig.Targets,
-		Config:  rpcGatewayConfig.HealthChecks,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	})
-	assert.NotNil(t, healthcheckManager)
-	assert.NoError(t, err)
+	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	rpcGatewayConfig.HealthcheckManager = healthcheckManager
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager so the
 	// no target will be tainted or marked as unhealthy by the
 	// HealthCheckManager the failoverProxy should automatically reroute the
 	// request to the second RPC Server by itself
-
-	httpFailoverProxy, err := NewProxy(rpcGatewayConfig)
+	httpFailoverProxy, err := NewProxy(context.Background(), rpcGatewayConfig)
 	assert.NotNil(t, httpFailoverProxy)
 	assert.NoError(t, err)
 
