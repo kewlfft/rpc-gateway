@@ -63,7 +63,3 @@ proxies:
           http:
             url: "https://alchemy.com/rpc/<apikey>"
 ```
-
-### Path Configuration
-
-The proxy can be configured to serve requests under a specific path. For example, with `path: "eth"`, the proxy will be accessible at `http://localhost:3000/eth`. This allows for better organization and potential future support for multiple proxies.
