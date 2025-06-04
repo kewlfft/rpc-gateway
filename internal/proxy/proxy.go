@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,24 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var (
+	metricRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "rpc_request_duration_seconds",
+			Help:    "Duration of RPC requests in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"method", "provider", "status"},
+	)
+	metricRequestErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rpc_requests_total",
+			Help: "Total number of RPC requests",
+		},
+		[]string{"method", "provider", "status"},
+	)
 )
 
 // Duration is a custom type that implements slog.LogValuer for better duration formatting
@@ -39,63 +58,34 @@ func (w *BufferedResponseWriter) WriteHeader(statusCode int) {
 }
 
 type Proxy struct {
-	targets []*NodeProvider
 	hcm     *HealthCheckManager
 	timeout time.Duration
 	logger  *slog.Logger
-
-	metricRequestDuration *prometheus.HistogramVec
-	metricRequestErrors   *prometheus.CounterVec
+	targets []*NodeProvider
 }
 
-// NewProxy creates a new proxy with the given configuration
-func NewProxy(config Config) (*Proxy, error) {
+// NewProxy creates a new proxy
+func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 	proxy := &Proxy{
 		hcm:     config.HealthcheckManager,
 		timeout: config.Proxy.UpstreamTimeout,
-		logger:  config.HealthcheckManager.logger,
-		metricRequestDuration: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name: "zeroex_rpc_gateway_request_duration_seconds",
-				Help: "Histogram of response time for Gateway in seconds",
-				Buckets: []float64{
-					.025,
-					.05,
-					.1,
-					.25,
-					.5,
-					1,
-					2.5,
-					5,
-					10,
-					15,
-					20,
-					25,
-					30,
-				},
-			}, []string{
-				"provider",
-				"method",
-				"status_code",
-			}),
-		metricRequestErrors: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "zeroex_rpc_gateway_request_errors_handled_total",
-				Help: "The total number of request errors handled by gateway",
-			}, []string{
-				"provider",
-				"type",
-			}),
+		logger:  config.HealthcheckManager.Logger,
 	}
 
+	// Create providers for each target
 	for _, target := range config.Targets {
 		p, err := NewNodeProvider(target)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to create provider for target %s: %w", target.Name, err)
 		}
-
 		proxy.targets = append(proxy.targets, p)
 	}
+
+	// Start health check manager
+	if err := config.HealthcheckManager.Start(ctx); err != nil {
+		return nil, fmt.Errorf("failed to start health check manager: %w", err)
+	}
+	config.HealthcheckManager.Logger.Info("health check manager started")
 
 	return proxy, nil
 }
@@ -183,13 +173,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"status", status,
 			"duration", duration)
 
-		p.metricRequestDuration.WithLabelValues(name, r.Method, strconv.Itoa(status)).Observe(duration.Seconds())
+		metricRequestDuration.WithLabelValues(r.Method, name, strconv.Itoa(status)).Observe(duration.Seconds())
 
 		if p.HasNodeProviderFailed(status) {
-			p.metricRequestErrors.WithLabelValues(name, "rerouted").Inc()
+			metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
 
 			if hc := p.hcm.GetHealthChecker(name); hc != nil {
-				hc.TaintHTTP()
+				hc.TaintHealthCheck()
 			}
 
 			p.logger.Debug("Request failed, trying next provider", "provider", name, "status", status)

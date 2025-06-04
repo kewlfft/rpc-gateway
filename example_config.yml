@@ -32,20 +32,20 @@ proxies:
           http:
             url: "https://ethereum.publicnode.com"
 
-  # - path: "polygon" # another proxy example
-  #   upstreamTimeout: "1s"
-  #   healthChecks:
-  #     interval: "5s"
-  #     timeout: "1s"
-  #     failureThreshold: 2
-  #     successThreshold: 1
-  #     blockDiffThreshold: 2
-  #   targets:
-  #     - name: "polygon-rpc"
-  #       connection:
-  #         http:
-  #           url: "https://polygon-rpc.com"
-  #     - name: "ankr-polygon"
-  #       connection:
-  #         http:
-  #           url: "https://rpc.ankr.com/polygon"
+  - path: "polygon" # another proxy example
+    upstreamTimeout: "1s"
+    healthChecks:
+      interval: "5s"
+      timeout: "1s"
+      failureThreshold: 2
+      successThreshold: 1
+      blockDiffThreshold: 2
+    targets:
+      - name: "polygon-rpc"
+        connection:
+          http:
+            url: "https://polygon-rpc.com"
+      - name: "ankr-polygon"
+        connection:
+          http:
+            url: "https://rpc.ankr.com/polygon"

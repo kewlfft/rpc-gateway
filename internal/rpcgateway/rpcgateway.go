@@ -144,27 +144,26 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 					slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 						Level: logLevel,
 					})),
+				Path: proxyConfig.Path,
 			})
 		if err != nil {
 			return nil, errors.Wrap(err, "healthcheckmanager failed")
 		}
 
-		p, err := proxy.NewProxy(
-			proxy.Config{
-				Proxy: proxy.ProxyConfig{
-					Path:            proxyConfig.Path,
-					UpstreamTimeout: upstreamTimeout,
-				},
-				Targets:            proxyConfig.Targets,
-				HealthChecks:       proxyConfig.HealthChecks,
-				HealthcheckManager: hcm,
+		// Create proxy
+		proxy, err := proxy.NewProxy(context.Background(), proxy.Config{
+			Proxy: proxy.ProxyConfig{
+				Path:            proxyConfig.Path,
+				UpstreamTimeout: upstreamTimeout,
 			},
-		)
+			Targets:            proxyConfig.Targets,
+			HealthcheckManager: hcm,
+		})
 		if err != nil {
-			return nil, errors.Wrap(err, "proxy failed")
+			return nil, fmt.Errorf("failed to create proxy: %w", err)
 		}
 
-		proxies[proxyConfig.Path] = p
+		proxies[proxyConfig.Path] = proxy
 		hcms[proxyConfig.Path] = hcm
 	}
 
@@ -245,6 +244,14 @@ func NewRPCGatewayFromConfigFile(s string) (*RPCGateway, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
+
+	slog.Info("Loaded config", "proxies", len(config.Proxies), "paths", func() []string {
+		paths := make([]string, len(config.Proxies))
+		for i, p := range config.Proxies {
+			paths[i] = p.Path
+		}
+		return paths
+	}())
 
 	return NewRPCGateway(config)
 }

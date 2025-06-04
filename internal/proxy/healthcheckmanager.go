@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -11,22 +12,61 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+var (
+	metricRPCProviderInfo = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "rpc_provider_info",
+			Help: "Information about the RPC provider",
+		},
+		[]string{"index", "name", "proxy"},
+	)
+	metricRPCProviderStatus = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "rpc_provider_status",
+			Help: "Status of the RPC provider (1 = healthy, 0 = unhealthy)",
+		},
+		[]string{"name", "status", "proxy"},
+	)
+	metricRPCProviderBlockNumber = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "rpc_provider_block_number",
+			Help: "Current block number of the RPC provider",
+		},
+		[]string{"name", "proxy"},
+	)
+	metricRPCProviderGasLeft = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "rpc_provider_gas_left",
+			Help: "Gas left in the RPC provider",
+		},
+		[]string{"name", "proxy"},
+	)
+)
+
+type Target struct {
+	Name       string `yaml:"name"`
+	Connection struct {
+		HTTP struct {
+			URL string `yaml:"url"`
+		} `yaml:"http"`
+	} `yaml:"connection"`
+}
+
+// HealthCheckManagerConfig is the configuration for the health check manager
 type HealthCheckManagerConfig struct {
-	Targets []NodeProviderConfig
-	Config  HealthCheckConfig
+	Targets []NodeProviderConfig `yaml:"targets"`
+	Config  HealthCheckConfig    `yaml:"healthChecks"`
 	Logger  *slog.Logger
+	Path    string
 }
 
 type HealthCheckManager struct {
-	hcs    []*HealthChecker
-	hcMap  map[string]*HealthChecker // Map for O(1) lookup by name
-	logger *slog.Logger
-	Config HealthCheckConfig
-
-	metricRPCProviderInfo        *prometheus.GaugeVec
-	metricRPCProviderStatus      *prometheus.GaugeVec
-	metricRPCProviderBlockNumber *prometheus.GaugeVec
-	metricRPCProviderGasLeft    *prometheus.GaugeVec
+	Config    HealthCheckConfig
+	Targets   []NodeProviderConfig
+	Logger    *slog.Logger
+	checkers  []*HealthChecker
+	ctx       context.Context
+	Path      string // Add Path field to store the proxy path
 
 	// Cache for last reported values with RWMutex for better read performance
 	lastReportedValues struct {
@@ -39,71 +79,36 @@ type HealthCheckManager struct {
 }
 
 func NewHealthCheckManager(config HealthCheckManagerConfig) (*HealthCheckManager, error) {
-	hcm := &HealthCheckManager{
-		logger: config.Logger,
-		Config: config.Config,
-		hcMap:  make(map[string]*HealthChecker),
-		metricRPCProviderInfo: promauto.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "zeroex_rpc_gateway_provider_info",
-				Help: "Gas limit of a given provider",
-			}, []string{
-				"index",
-				"provider",
-			}),
-		metricRPCProviderStatus: promauto.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "zeroex_rpc_gateway_provider_status",
-				Help: "Current status of a given provider by type. Type can be either healthy or tainted.",
-			}, []string{
-				"provider",
-				"type",
-			}),
-		metricRPCProviderBlockNumber: promauto.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "zeroex_rpc_gateway_provider_block_number",
-				Help: "Block number of a given provider",
-			}, []string{
-				"provider",
-			}),
-		metricRPCProviderGasLeft: promauto.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "zeroex_rpc_gateway_provider_gasLeft_number",
-				Help: "Gas left of a given provider",
-			}, []string{
-				"provider",
-			}),
+	// Create health checkers for each target
+	checkers := make([]*HealthChecker, 0, len(config.Targets))
+	for _, target := range config.Targets {
+		checker, err := NewHealthChecker(HealthCheckerConfig{
+			Logger:           config.Logger,
+			URL:              target.Connection.HTTP.URL,
+			Name:             target.Name,
+			Interval:         config.Config.Interval,
+			Timeout:          config.Config.Timeout,
+			FailureThreshold: config.Config.FailureThreshold,
+			SuccessThreshold: config.Config.SuccessThreshold,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create health checker for target %s: %w", target.Name, err)
+		}
+		checkers = append(checkers, checker)
 	}
 
-	// Initialize the cache maps
+	hcm := &HealthCheckManager{
+		Config:   config.Config,
+		Targets:  config.Targets,
+		Logger:   config.Logger,
+		checkers: checkers,
+		Path:     config.Path, // Set the Path field from config
+	}
+
 	hcm.lastReportedValues.healthy = make(map[string]bool)
 	hcm.lastReportedValues.tainted = make(map[string]bool)
 	hcm.lastReportedValues.block = make(map[string]uint64)
 	hcm.lastReportedValues.gas = make(map[string]uint64)
-
-	for _, target := range config.Targets {
-		hc, err := NewHealthChecker(
-			HealthCheckerConfig{
-				Logger:           config.Logger,
-				URL:              target.Connection.HTTP.URL,
-				Name:             target.Name,
-				Interval:         config.Config.Interval,
-				Timeout:          config.Config.Timeout,
-				FailureThreshold: config.Config.FailureThreshold,
-				SuccessThreshold: config.Config.SuccessThreshold,
-			})
-		if err != nil {
-			return nil, err
-		}
-
-		// Create a closure that captures the provider name
-		hc.SetBlockNumberUpdateCallback(func(blockNumber uint64) {
-			hcm.checkBlockLagAndTaint(target.Name, blockNumber)
-		})
-
-		hcm.hcs = append(hcm.hcs, hc)
-		hcm.hcMap[target.Name] = hc
-	}
 
 	return hcm, nil
 }
@@ -123,7 +128,7 @@ func (h *HealthCheckManager) runLoop(c context.Context) error {
 }
 
 func (h *HealthCheckManager) IsHealthy(name string) bool {
-	for _, hc := range h.hcs {
+	for _, hc := range h.checkers {
 		if hc.Name() == name && hc.IsHealthy() {
 			return true
 		}
@@ -134,7 +139,7 @@ func (h *HealthCheckManager) IsHealthy(name string) bool {
 
 // GetHealthChecker returns the health checker for a given provider name
 func (h *HealthCheckManager) GetHealthChecker(name string) *HealthChecker {
-	for _, hc := range h.hcs {
+	for _, hc := range h.checkers {
 		if hc.Name() == name {
 			return hc
 		}
@@ -154,7 +159,7 @@ func (h *HealthCheckManager) reportStatusMetrics() {
 	})
 
 	// First pass: collect all values and check what needs updating
-	for _, hc := range h.hcs {
+	for _, hc := range h.checkers {
 		name := hc.Name()
 		isHealthy := hc.IsHealthy()
 		isTainted := hc.IsTainted()
@@ -206,15 +211,15 @@ func (h *HealthCheckManager) reportStatusMetrics() {
 	for name, update := range updates {
 		if update.changed {
 			// Update status metrics
-			h.metricRPCProviderStatus.WithLabelValues(name, "healthy").Set(boolToFloat64(update.healthy))
-			h.metricRPCProviderStatus.WithLabelValues(name, "tainted").Set(boolToFloat64(update.tainted))
+			metricRPCProviderStatus.WithLabelValues(name, "healthy", h.Path).Set(boolToFloat64(update.healthy))
+			metricRPCProviderStatus.WithLabelValues(name, "tainted", h.Path).Set(boolToFloat64(update.tainted))
 			h.lastReportedValues.healthy[name] = update.healthy
 			h.lastReportedValues.tainted[name] = update.tainted
 
 			// Update block and gas metrics if healthy and not tainted
 			if update.healthy && !update.tainted {
-				h.metricRPCProviderBlockNumber.WithLabelValues(name).Set(float64(update.block))
-				h.metricRPCProviderGasLeft.WithLabelValues(name).Set(float64(update.gas))
+				metricRPCProviderBlockNumber.WithLabelValues(name, h.Path).Set(float64(update.block))
+				metricRPCProviderGasLeft.WithLabelValues(name, h.Path).Set(float64(update.gas))
 				h.lastReportedValues.block[name] = update.block
 				h.lastReportedValues.gas[name] = update.gas
 			}
@@ -231,8 +236,8 @@ func boolToFloat64(b bool) float64 {
 }
 
 func (h *HealthCheckManager) Start(c context.Context) error {
-	for i, hc := range h.hcs {
-		h.metricRPCProviderInfo.WithLabelValues(strconv.Itoa(i), hc.Name()).Set(1)
+	for i, hc := range h.checkers {
+		metricRPCProviderInfo.WithLabelValues(strconv.Itoa(i), hc.Name(), h.Path).Set(1)
 		go hc.Start(c)
 	}
 
@@ -257,7 +262,7 @@ func (h *HealthCheckManager) Start(c context.Context) error {
 func (h *HealthCheckManager) Stop(c context.Context) error {
 	slog.Info("stopping health check manager")
 	
-	for _, checker := range h.hcs {
+	for _, checker := range h.checkers {
 		if err := checker.Stop(c); err != nil {
 			slog.Error("error stopping health checker", "name", checker.Name(), "error", err)
 		}
@@ -272,7 +277,7 @@ func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, update
 	var targetHC *HealthChecker
 
 	// Single pass: find max block and target health checker
-	for _, hc := range h.hcs {
+	for _, hc := range h.checkers {
 		if bn := hc.BlockNumber(); bn > maxBlock {
 			maxBlock = bn
 		}
@@ -282,7 +287,7 @@ func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, update
 	}
 
 	diff := maxBlock - updatedBlockNumber
-	h.logger.Debug("RPC block comparison",
+	h.Logger.Debug("RPC block comparison",
 		"name", updatedRPCName,
 		"blockNumber", updatedBlockNumber,
 		"maxBlock", maxBlock,
@@ -292,7 +297,7 @@ func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, update
 
 	if diff > uint64(h.Config.BlockDiffThreshold) && targetHC != nil {
 		targetHC.TaintHealthCheck()
-		h.logger.Warn("Provider tainted due to block difference", 
+		h.Logger.Warn("Provider tainted due to block difference", 
 			"provider", targetHC.Name(),
 			"blockDiff", diff,
 		)

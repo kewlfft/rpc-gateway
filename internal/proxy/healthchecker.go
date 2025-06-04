@@ -115,6 +115,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		},
 	}
 
+	healthchecker.logger.Info("Health checker created", "provider", config.Name, "url", config.URL)
+
 	return healthchecker, nil
 }
 
