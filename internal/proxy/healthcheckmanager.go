@@ -63,6 +63,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 			Timeout:          config.HealthChecks.Timeout,
 			FailureThreshold: config.HealthChecks.FailureThreshold,
 			SuccessThreshold: config.HealthChecks.SuccessThreshold,
+			Path:            config.Path,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health checker for target %s: %w", target.Name, err)

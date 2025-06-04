@@ -69,29 +69,30 @@ type HealthCheckerConfig struct {
 
 	// Maximum allowed block difference between providers
 	BlockDiffThreshold uint `yaml:"blockDiffThreshold"`
+
+	// Path information
+	Path string
 }
 
 // BlockNumberUpdateCallback is called when a health checker successfully updates its block number
 type BlockNumberUpdateCallback func(blockNumber uint64)
 
 type HealthChecker struct {
-	client     *rpc.Client
-	httpClient *http.Client
-	config     HealthCheckerConfig
-	logger     *slog.Logger
-
-	// latest known blockNumber from the RPC.
-	blockNumber uint64
-	// gasLeft received from the GasLeft.sol contract call.
-	gasLeft uint64
+	config              HealthCheckerConfig
+	client              *rpc.Client
+	httpClient          *http.Client
+	consecutiveFailures uint
+	consecutiveSuccesses uint
+	isHealthy          bool
+	blockNumber        uint64
+	gasLeft            uint64
+	mu                 sync.RWMutex
 
 	// Taint state
 	taint TaintState
 
 	// callback function to be called when block number is updated
 	onBlockNumberUpdate BlockNumberUpdateCallback
-
-	mu sync.RWMutex
 }
 
 func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
@@ -103,10 +104,9 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 	client.SetHeader("User-Agent", userAgent)
 
 	healthchecker := &HealthChecker{
-		logger:     config.Logger.With("nodeprovider", config.Name),
+		config:     config,
 		client:     client,
 		httpClient: &http.Client{},
-		config:     config,
 		blockNumber: 1,
 		gasLeft:    1,
 		taint: TaintState{
@@ -115,7 +115,7 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		},
 	}
 
-	healthchecker.logger.Info("Health checker created", "provider", config.Name, "url", config.URL)
+	healthchecker.config.Logger.Info("Health checker created", "provider", config.Name, "url", config.URL)
 
 	return healthchecker, nil
 }
@@ -131,11 +131,10 @@ func (h *HealthChecker) checkBlockNumber(c context.Context) (uint64, error) {
 
 	err := h.client.CallContext(c, &blockNumber, "eth_blockNumber")
 	if err != nil {
-		h.logger.Error("could not fetch block number", "error", err)
-
+		h.config.Logger.Error("could not fetch block number", "error", err)
 		return 0, err
 	}
-	h.logger.Debug("fetch block number completed", "blockNumber", uint64(blockNumber))
+	h.config.Logger.Debug("fetch block number completed", "nodeprovider", h.config.Name, "blockNumber", uint64(blockNumber), "path", h.config.Path)
 
 	return uint64(blockNumber), nil
 }
@@ -147,12 +146,10 @@ func (h *HealthChecker) checkBlockNumber(c context.Context) (uint64, error) {
 func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 	gasLeft, err := performGasLeftCall(c, h.httpClient, h.config.URL)
 	if err != nil {
-		h.logger.Error("could not fetch gas left", "error", err)
-
+		h.config.Logger.Error("could not fetch gas left", "error", err)
 		return gasLeft, err
 	}
-	h.logger.Debug("fetch gas left completed", "gasLeft", gasLeft)
-
+	h.config.Logger.Debug("fetch gas left completed", "nodeprovider", h.config.Name, "gasLeft", gasLeft, "path", h.config.Path)
 	return gasLeft, nil
 }
 
@@ -287,7 +284,7 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 	h.taint.isTainted = true
 	h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, h.RemoveTaint)
 
-	h.logger.Info("RPC provider tainted", 
+	h.config.Logger.Info("RPC provider tainted", 
 		"name", h.config.Name,
 		"reason", config.Reason,
 		"waitTime", h.taint.waitTime,
@@ -317,7 +314,7 @@ func (h *HealthChecker) RemoveTaint() {
 	h.taint.lastRemoval = time.Now()
 	h.taint.removalTimer = nil
 	
-	h.logger.Info("RPC provider taint removed", 
+	h.config.Logger.Info("RPC provider taint removed", 
 		"name", h.config.Name,
 		"nextTaintWait", h.taint.waitTime,
 	)
