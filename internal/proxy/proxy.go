@@ -106,6 +106,26 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 		statusCode == http.StatusServiceUnavailable
 }
 
+// copyHeaders copies headers from src to dst
+func (p *Proxy) copyHeaders(dst http.ResponseWriter, src http.Header) {
+	// Handle common headers first
+	if ct := src.Get("Content-Type"); ct != "" {
+		dst.Header().Set("Content-Type", ct)
+	}
+	if cl := src.Get("Content-Length"); cl != "" {
+		dst.Header().Set("Content-Length", cl)
+	}
+	
+	// Copy remaining headers
+	for k, v := range src {
+		if k != "Content-Type" && k != "Content-Length" {
+			for _, val := range v {
+				dst.Header().Add(k, val)
+			}
+		}
+	}
+}
+
 // ServeHTTP handles incoming HTTP requests
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -129,10 +149,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		req := r.Clone(r.Context())
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-		// Use buffered response writer
+		// Use buffered response writer with pre-allocated buffer
 		bw := &BufferedResponseWriter{
-			header: make(http.Header),
-			body:   &bytes.Buffer{},
+			header: make(http.Header, 4), // Pre-allocate for common headers
+			body:   bytes.NewBuffer(make([]byte, 0, 32*1024)), // 32KB initial capacity
 		}
 
 		target.ServeHTTP(bw, req)
@@ -164,7 +184,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"status", bw.statusCode,
 			"method", r.Method,
 			"path", r.URL.Path,
-			"body", bw.body.String(),
 			"headers", r.Header,
 			"duration", Duration(duration),
 		)
@@ -172,13 +191,4 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p.logger.Error("all providers failed")
 	http.Error(w, "all providers failed", http.StatusServiceUnavailable)
-}
-
-// copyHeaders copies headers from src to dst
-func (p *Proxy) copyHeaders(dst http.ResponseWriter, src http.Header) {
-	for k, v := range src {
-		for _, val := range v {
-			dst.Header().Add(k, val)
-		}
-	}
 }
