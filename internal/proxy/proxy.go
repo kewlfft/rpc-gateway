@@ -109,93 +109,69 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 // ServeHTTP handles incoming HTTP requests
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	var lastErr error
 
-	// Read and buffer the request body once
-	var bodyBytes []byte
-	if r.Body != nil {
-		var err error
-		bodyBytes, err = io.ReadAll(r.Body)
-		if err != nil {
-			p.logger.Error("failed to read request body", "error", err)
-			http.Error(w, "failed to read request body", http.StatusBadRequest)
-			return
-		}
-		r.Body.Close()
+	// Read and buffer request body once
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		p.logger.Error("failed to read request body", "error", err)
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
 	}
+	_ = r.Body.Close()
 
-	// Try each provider until one succeeds
 	for _, target := range p.targets {
 		name := target.Name()
 		if !p.hcm.IsHealthy(name) {
 			continue
 		}
 
-		// Create a new request with the buffered body
+		// Clone request with buffered body
 		req := r.Clone(r.Context())
-		if bodyBytes != nil {
-			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		}
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-		// Create a buffered response writer to capture the response
+		// Use buffered response writer
 		bw := &BufferedResponseWriter{
 			header: make(http.Header),
 			body:   &bytes.Buffer{},
 		}
 
-		// Forward the request to the provider
 		target.ServeHTTP(bw, req)
+		duration := time.Since(start).Seconds()
 
-		// Check if the request was successful
 		if !p.HasNodeProviderFailed(bw.statusCode) {
-			// Copy headers and body to the original response writer
 			p.copyHeaders(w, bw.header)
 			w.WriteHeader(bw.statusCode)
-			if _, err := io.Copy(w, bw.body); err != nil {
+			_, err := io.Copy(w, bw.body)
+			if err != nil {
 				p.logger.Error("failed to write response", "error", err)
 			}
-
-			// Record metrics
-			duration := time.Since(start).Seconds()
 			metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(duration)
 			metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
 			return
 		}
 
-		// Record failure metrics
-		duration := time.Since(start).Seconds()
+		// Provider failed, record and taint
 		metricRequestDuration.WithLabelValues(r.Method, name, "error").Observe(duration)
 		metricRequestErrors.WithLabelValues(r.Method, name, "error").Inc()
+		metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
 
-		// Mark provider as failed
-		if p.HasNodeProviderFailed(bw.statusCode) {
-			metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
-			if hc := p.hcm.GetHealthChecker(name); hc != nil {
-				p.logger.Debug("tainting provider due to failed request", 
-					"provider", name,
-					"status", bw.statusCode,
-					"method", r.Method,
-					"path", r.URL.Path)
-				hc.TaintHTTP()
-			}
-			p.logger.Debug("provider failed, trying next", 
-				"provider", name, 
-				"status", bw.statusCode,
-				"method", r.Method,
-				"path", r.URL.Path,
-				"body", bw.body.String(),
-				"headers", r.Header,
-				"duration", Duration(duration))
+		if hc := p.hcm.GetHealthChecker(name); hc != nil {
+			hc.TaintHTTP()
 		}
 
-		lastErr = fmt.Errorf("provider %s failed with status %d", name, bw.statusCode)
+		p.logger.Debug("provider failed, trying next",
+			"provider", name,
+			"status", bw.statusCode,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"body", bw.body.String(),
+			"headers", r.Header,
+			"duration", Duration(duration),
+		)
 	}
 
-	// If we get here, all providers failed
-	if lastErr != nil {
-		p.logger.Error("all providers failed", "error", lastErr)
-		http.Error(w, "all providers failed", http.StatusServiceUnavailable)
-	}
+	p.logger.Error("all providers failed")
+	http.Error(w, "all providers failed", http.StatusServiceUnavailable)
 }
 
 // copyHeaders copies headers from src to dst
