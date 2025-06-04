@@ -9,20 +9,6 @@ import (
 	"github.com/go-http-utils/headers"
 )
 
-type NodeProviderConnectionHTTPConfig struct {
-	URL         string `yaml:"url"`
-	Compression bool   `yaml:"compression"`
-}
-
-type NodeProviderConnectionConfig struct {
-	HTTP NodeProviderConnectionHTTPConfig `yaml:"http"`
-}
-
-type NodeProviderConfig struct {
-	Name       string                       `yaml:"name"`
-	Connection NodeProviderConnectionConfig `yaml:"connection"`
-}
-
 type NodeProvider struct {
 	Config NodeProviderConfig
 	Proxy  *httputil.ReverseProxy

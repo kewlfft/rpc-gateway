@@ -136,35 +136,25 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			return nil, errors.Wrap(err, "invalid upstream timeout")
 		}
 
-		hcm, err := proxy.NewHealthCheckManager(
-			proxy.HealthCheckManagerConfig{
-				Targets: proxyConfig.Targets,
-				Config:  proxyConfig.HealthChecks,
-				Logger: slog.New(
-					slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-						Level: logLevel,
-					})),
-				Path: proxyConfig.Path,
-			})
-		if err != nil {
-			return nil, errors.Wrap(err, "healthcheckmanager failed")
+		// Create proxy configuration
+		proxyCfg := proxy.Config{
+			Path:            proxyConfig.Path,
+			UpstreamTimeout: upstreamTimeout,
+			HealthChecks:    proxyConfig.HealthChecks,
+			Targets:         proxyConfig.Targets,
+			Logger: slog.New(
+				slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+					Level: logLevel,
+				})),
 		}
 
 		// Create proxy
-		proxy, err := proxy.NewProxy(context.Background(), proxy.Config{
-			Proxy: proxy.ProxyConfig{
-				Path:            proxyConfig.Path,
-				UpstreamTimeout: upstreamTimeout,
-			},
-			Targets:            proxyConfig.Targets,
-			HealthcheckManager: hcm,
-		})
+		p, err := proxy.NewProxy(context.Background(), proxyCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create proxy: %w", err)
 		}
 
-		proxies[proxyConfig.Path] = proxy
-		hcms[proxyConfig.Path] = hcm
+		proxies[proxyConfig.Path] = p
 	}
 
 	r := chi.NewRouter()

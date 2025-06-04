@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"log/slog"
 	"time"
 )
 
+// HealthCheckConfig defines the health check parameters
 type HealthCheckConfig struct {
 	Interval           time.Duration `yaml:"interval"`
 	Timeout           time.Duration `yaml:"timeout"`
@@ -12,15 +14,22 @@ type HealthCheckConfig struct {
 	BlockDiffThreshold uint64       `yaml:"blockDiffThreshold"`
 }
 
-type ProxyConfig struct { // nolint:revive
-	Path            string        `yaml:"path"`
-	UpstreamTimeout time.Duration `yaml:"upstreamTimeout"`
+// NodeProviderConfig defines the configuration for a node provider
+type NodeProviderConfig struct {
+	Name       string `yaml:"name"`
+	Connection struct {
+		HTTP struct {
+			URL         string `yaml:"url"`
+			Compression bool   `yaml:"compression"`
+		} `yaml:"http"`
+	} `yaml:"connection"`
 }
 
-// This struct is temporary. It's about to keep the input interface clean and simple.
+// Config defines the configuration for a proxy
 type Config struct {
-	Proxy              ProxyConfig
-	Targets            []NodeProviderConfig
-	HealthChecks       HealthCheckConfig
-	HealthcheckManager *HealthCheckManager
+	Path            string            `yaml:"path"`
+	UpstreamTimeout time.Duration     `yaml:"upstreamTimeout"`
+	HealthChecks    HealthCheckConfig `yaml:"healthChecks"`
+	Targets         []NodeProviderConfig `yaml:"targets"`
+	Logger          *slog.Logger
 }
