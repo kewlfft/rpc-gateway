@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/0xProject/rpc-gateway/internal/rpcgateway"
+	"github.com/kewlfft/rpc-gateway/internal/rpcgateway"
 )
 
 func main() {

@@ -5,7 +5,7 @@ import (
 	"net/http/httputil"
 	"strings"
 
-	"github.com/0xProject/rpc-gateway/internal/middleware"
+	"github.com/kewlfft/rpc-gateway/internal/middleware"
 	"github.com/go-http-utils/headers"
 )
 

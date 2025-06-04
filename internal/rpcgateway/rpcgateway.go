@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/0xProject/rpc-gateway/internal/metrics"
-	"github.com/0xProject/rpc-gateway/internal/proxy"
+	"github.com/kewlfft/rpc-gateway/internal/metrics"
+	"github.com/kewlfft/rpc-gateway/internal/proxy"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/pkg/errors"

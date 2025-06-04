@@ -1,4 +1,4 @@
-module github.com/0xProject/rpc-gateway
+module github.com/kewlfft/rpc-gateway
 
 go 1.23.0
 

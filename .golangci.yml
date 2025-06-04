@@ -82,6 +82,9 @@ linters-settings:
           - github.com/go-chi/chi/v5
           - github.com/urfave/cli/v2
           - github.com/hashicorp/go-multierror
+  gci:
+    sections:
+      - github.com/kewlfft/rpc-gateway
 
 issues:
   max-same-issues: 0 # unlimited
