@@ -45,7 +45,7 @@ proxies:
         connection:
           http:
             url: "https://polygon-rpc.com"
-      - name: "ankr-polygon"
+      - name: "meow"
         connection:
           http:
-            url: "https://rpc.ankr.com/polygon"
+            url: "https://polygon.meowrpc.com"
