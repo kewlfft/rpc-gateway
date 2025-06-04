@@ -23,5 +23,11 @@ func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, er
 		// r.URL.Path = target.Path
 	}
 
+	// Add custom error handler to properly handle response body errors
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		// Don't try to read from the response body if there's an error
+		w.WriteHeader(http.StatusBadGateway)
+	}
+
 	return proxy, nil
 }

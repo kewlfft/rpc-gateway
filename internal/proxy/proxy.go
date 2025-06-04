@@ -154,6 +154,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if hc := p.hcm.GetHealthChecker(name); hc != nil {
 				hc.TaintHealthCheck()
 			}
+			p.logger.Debug("provider failed, trying next", "provider", name, "status", bw.statusCode)
 		}
 
 		lastErr = fmt.Errorf("provider %s failed with status %d", name, bw.statusCode)
