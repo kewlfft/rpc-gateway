@@ -131,10 +131,16 @@ func (h *HealthChecker) checkBlockNumber(c context.Context) (uint64, error) {
 
 	err := h.client.CallContext(c, &blockNumber, "eth_blockNumber")
 	if err != nil {
-		h.config.Logger.Error("could not fetch block number", "error", err)
+		h.config.Logger.Error("could not fetch block number", 
+			"error", err,
+			"provider", h.config.Name,
+			"path", h.config.Path)
 		return 0, err
 	}
-	h.config.Logger.Debug("fetch block number completed", "nodeprovider", h.config.Name, "blockNumber", uint64(blockNumber), "path", h.config.Path)
+	h.config.Logger.Debug("fetch block number completed", 
+		"nodeprovider", h.config.Name, 
+		"blockNumber", uint64(blockNumber), 
+		"path", h.config.Path)
 
 	return uint64(blockNumber), nil
 }
@@ -146,10 +152,16 @@ func (h *HealthChecker) checkBlockNumber(c context.Context) (uint64, error) {
 func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 	gasLeft, err := performGasLeftCall(c, h.httpClient, h.config.URL)
 	if err != nil {
-		h.config.Logger.Error("could not fetch gas left", "error", err)
+		h.config.Logger.Error("could not fetch gas left", 
+			"error", err,
+			"provider", h.config.Name,
+			"path", h.config.Path)
 		return gasLeft, err
 	}
-	h.config.Logger.Debug("fetch gas left completed", "nodeprovider", h.config.Name, "gasLeft", gasLeft, "path", h.config.Path)
+	h.config.Logger.Debug("fetch gas left completed", 
+		"nodeprovider", h.config.Name, 
+		"gasLeft", gasLeft, 
+		"path", h.config.Path)
 	return gasLeft, nil
 }
 
@@ -289,7 +301,9 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 		"reason", config.Reason,
 		"waitTime", h.taint.waitTime,
 		"nextRemoval", time.Now().Add(h.taint.waitTime),
-	)
+		"path", h.config.Path,
+		"consecutiveFailures", h.consecutiveFailures,
+		"consecutiveSuccesses", h.consecutiveSuccesses)
 }
 
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
