@@ -181,10 +181,14 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	// Recoverer is a middleware that recovers from panics, logs the panic (and
 	// a backtrace), and returns a HTTP 500 (Internal Server Error) status if
 	// possible. Recoverer prints a request ID if one is provided.
-	//
 	r.Use(middleware.Recoverer)
 
-	r.Handle("/", proxy)
+	// Handle the proxy path
+	if config.Proxy.Path != "" {
+		r.Handle(fmt.Sprintf("/%s/*", config.Proxy.Path), proxy)
+	} else {
+		r.Handle("/*", proxy)
+	}
 
 	return &RPCGateway{
 		config: config,

@@ -4,6 +4,7 @@ metrics:
 
 proxy:
   port: 3020 # port for RPC gateway
+  path: "eth" # optional directory path for the proxy (e.g. http://localhost/eth:3020)
   upstreamTimeout: "1s" # when is a request considered timed out
 
 healthChecks:
