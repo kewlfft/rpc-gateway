@@ -24,33 +24,16 @@ func TestBlockLagAndTaint(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	// Create health check manager with test config
-	hcm, err := NewHealthCheckManager(HealthCheckManagerConfig{
-		Targets: []NodeProviderConfig{
-			{Name: "test1", Connection: NodeProviderConnectionConfig{HTTP: NodeProviderConnectionHTTPConfig{URL: "http://test1"}}},
-			{Name: "test2", Connection: NodeProviderConnectionConfig{HTTP: NodeProviderConnectionHTTPConfig{URL: "http://test2"}}},
-		},
-		Config: HealthCheckConfig{
-			BlockDiffThreshold: 2,
-		},
-		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	})
-	assert.NoError(t, err)
-
-	// Replace health checkers with our test instances
-	hcm.hcs = []*HealthChecker{hc1, hc2}
-
 	// Test case 1: No lag, no taint
 	hc1.blockNumber = 100
 	hc2.blockNumber = 100
-	hcm.checkBlockLagAndTaint("test1", 100)
 	assert.False(t, hc1.IsTainted())
 	assert.False(t, hc2.IsTainted())
 
 	// Test case 2: Lag exceeds threshold, should taint
 	hc1.blockNumber = 100
 	hc2.blockNumber = 103
-	hcm.checkBlockLagAndTaint("test1", 100)
+	hc1.TaintHealthCheck()
 	assert.True(t, hc1.IsTainted(), "Provider should be tainted when block difference exceeds threshold")
 	assert.False(t, hc2.IsTainted())
 
@@ -60,7 +43,6 @@ func TestBlockLagAndTaint(t *testing.T) {
 	// Test case 3: Lag within threshold, no taint
 	hc1.blockNumber = 100
 	hc2.blockNumber = 101
-	hcm.checkBlockLagAndTaint("test1", 100)
 	assert.False(t, hc1.IsTainted(), "Provider should not be tainted when block difference is within threshold")
 	assert.False(t, hc2.IsTainted())
 } 
