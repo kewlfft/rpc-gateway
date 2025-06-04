@@ -51,7 +51,6 @@ func (n *NodeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !n.Config.Connection.HTTP.Compression && gzip {
 		middleware.Gunzip(n.Proxy).ServeHTTP(w, r)
-
 		return
 	}
 

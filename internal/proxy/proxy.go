@@ -48,6 +48,7 @@ type Proxy struct {
 	metricRequestErrors   *prometheus.CounterVec
 }
 
+// NewProxy creates a new proxy with the given configuration
 func NewProxy(config Config) (*Proxy, error) {
 	proxy := &Proxy{
 		hcm:     config.HealthcheckManager,
@@ -176,6 +177,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		status := pw.statusCode
 		duration := time.Since(start)
+
+		p.logger.Debug("Provider response", 
+			"provider", name,
+			"status", status,
+			"duration", duration)
 
 		p.metricRequestDuration.WithLabelValues(name, r.Method, strconv.Itoa(status)).Observe(duration.Seconds())
 

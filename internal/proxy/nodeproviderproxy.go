@@ -19,7 +19,8 @@ func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, er
 		r.Host = target.Host
 		r.URL.Scheme = target.Scheme
 		r.URL.Host = target.Host
-		r.URL.Path = target.Path
+		// Keep the original path from the request
+		// r.URL.Path = target.Path
 	}
 
 	return proxy, nil
