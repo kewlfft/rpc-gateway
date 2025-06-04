@@ -1,34 +1,51 @@
 ---
 metrics:
-  port: 9090 # port for prometheus metrics, served on /metrics and /
+  port: 9010 # port for prometheus metrics, served on /metrics and /
 
-proxy:
-  port: 3020 # port for RPC gateway
-  path: "eth" # optional directory path for the proxy (e.g. http://localhost/eth:3020)
-  upstreamTimeout: "1s" # when is a request considered timed out
+port: 3000 # port for RPC gateway
 
-healthChecks:
-  interval: "5s" # how often to do healthchecks
-  timeout: "1s" # when should the timeout occur and considered unhealthy
-  failureThreshold: 2 # how many failed checks until marked as unhealthy
-  successThreshold: 1 # how many successes to be marked as healthy again
-  blockDiffThreshold: 2 # maximum allowed block difference between providers
+proxies:
+  - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
+    upstreamTimeout: "1s" # when is a request considered timed out
+    healthChecks:
+      interval: "5s" # how often to do healthchecks
+      timeout: "1s" # when should the timeout occur and considered unhealthy
+      failureThreshold: 2 # how many failed checks until marked as unhealthy
+      successThreshold: 1 # how many successes to be marked as healthy again
+      blockDiffThreshold: 2 # maximum allowed block difference between providers
+    targets:
+      - name: "meow"
+        connection:
+          http:
+            url: "https://eth.meowrpc.com"
+            # compression: true # Specify if the target supports request compression
+      - name: "1rpc"
+        connection:
+          http:
+            url: "https://1rpc.io/eth"
+      - name: "Ankr"
+        connection:
+          http:
+            url: "https://rpc.ankr.com/eth"
+      - name: "publicnode"
+        connection:
+          http:
+            url: "https://ethereum.publicnode.com"
 
-targets:
-  - name: "meow"
-    connection:
-      http:
-        url: "https://eth.meowrpc.com"
-        # compression: true # Specify if the target supports request compression
-  - name: "1rpc"
-    connection:
-      http:
-        url: "https://1rpc.io/eth"
-  - name: "Ankr"
-    connection:
-      http:
-        url: "https://rpc.ankr.com/eth"
-  - name: "publicnode"
-    connection:
-      http:
-        url: "https://ethereum.publicnode.com"
+  # - path: "polygon" # another proxy example
+  #   upstreamTimeout: "1s"
+  #   healthChecks:
+  #     interval: "5s"
+  #     timeout: "1s"
+  #     failureThreshold: 2
+  #     successThreshold: 1
+  #     blockDiffThreshold: 2
+  #   targets:
+  #     - name: "polygon-rpc"
+  #       connection:
+  #         http:
+  #           url: "https://polygon-rpc.com"
+  #     - name: "ankr-polygon"
+  #       connection:
+  #         http:
+  #           url: "https://rpc.ankr.com/polygon"

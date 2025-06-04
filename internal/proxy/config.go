@@ -13,8 +13,7 @@ type HealthCheckConfig struct {
 }
 
 type ProxyConfig struct { // nolint:revive
-	Port            string        `yaml:"port"`
-	Path            string        `yaml:"path"` // Optional directory path for the proxy
+	Path            string        `yaml:"path"`
 	UpstreamTimeout time.Duration `yaml:"upstreamTimeout"`
 }
 

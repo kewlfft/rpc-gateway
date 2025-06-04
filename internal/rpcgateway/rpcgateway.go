@@ -19,8 +19,8 @@ import (
 
 type RPCGateway struct {
 	config  RPCGatewayConfig
-	proxy   *proxy.Proxy
-	hcm     *proxy.HealthCheckManager
+	proxies map[string]*proxy.Proxy
+	hcms    map[string]*proxy.HealthCheckManager
 	server  *http.Server
 	metrics *metrics.Server
 }
@@ -31,16 +31,18 @@ func (r *RPCGateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 func (r *RPCGateway) Start(c context.Context) error {
 	// Check if ports are available
-	if err := checkPortAvailability(r.config.Proxy.Port); err != nil {
+	if err := checkPortAvailability(r.config.Port); err != nil {
 		return errors.Wrap(err, "rpc-gateway port not available")
 	}
 	if err := checkPortAvailability(fmt.Sprintf("%d", r.config.Metrics.Port)); err != nil {
 		return errors.Wrap(err, "metrics port not available")
 	}
 
-	// Start health check manager first
-	if err := r.hcm.Start(c); err != nil {
-		return errors.Wrap(err, "failed to start health check manager")
+	// Start health check managers first
+	for _, hcm := range r.hcms {
+		if err := hcm.Start(c); err != nil {
+			return errors.Wrap(err, "failed to start health check manager")
+		}
 	}
 
 	// Start metrics server in a goroutine
@@ -85,9 +87,11 @@ func (r *RPCGateway) Stop(c context.Context) error {
 		slog.Error("error stopping metrics server", "error", err)
 	}
 
-	// Stop health check manager last
-	if err := r.hcm.Stop(c); err != nil {
-		slog.Error("error stopping health check manager", "error", err)
+	// Stop health check managers last
+	for _, hcm := range r.hcms {
+		if err := hcm.Stop(c); err != nil {
+			slog.Error("error stopping health check manager", "error", err)
+		}
 	}
 
 	slog.Info("rpc-gateway shutdown complete")
@@ -121,29 +125,47 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}),
 	)
 
-	hcm, err := proxy.NewHealthCheckManager(
-		proxy.HealthCheckManagerConfig{
-			Targets: config.Targets,
-			Config:  config.HealthChecks,
-			Logger: slog.New(
-				slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-					Level: logLevel,
-				})),
-		})
-	if err != nil {
-		return nil, errors.Wrap(err, "healthcheckmanager failed")
-	}
+	// Initialize maps for proxies and health check managers
+	proxies := make(map[string]*proxy.Proxy)
+	hcms := make(map[string]*proxy.HealthCheckManager)
 
-	proxy, err := proxy.NewProxy(
-		proxy.Config{
-			Proxy:              config.Proxy,
-			Targets:            config.Targets,
-			HealthChecks:       config.HealthChecks,
-			HealthcheckManager: hcm,
-		},
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "proxy failed")
+	// Create health check managers and proxies for each proxy config
+	for _, proxyConfig := range config.Proxies {
+		upstreamTimeout, err := time.ParseDuration(proxyConfig.UpstreamTimeout)
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid upstream timeout")
+		}
+
+		hcm, err := proxy.NewHealthCheckManager(
+			proxy.HealthCheckManagerConfig{
+				Targets: proxyConfig.Targets,
+				Config:  proxyConfig.HealthChecks,
+				Logger: slog.New(
+					slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+						Level: logLevel,
+					})),
+			})
+		if err != nil {
+			return nil, errors.Wrap(err, "healthcheckmanager failed")
+		}
+
+		p, err := proxy.NewProxy(
+			proxy.Config{
+				Proxy: proxy.ProxyConfig{
+					Path:            proxyConfig.Path,
+					UpstreamTimeout: upstreamTimeout,
+				},
+				Targets:            proxyConfig.Targets,
+				HealthChecks:       proxyConfig.HealthChecks,
+				HealthcheckManager: hcm,
+			},
+		)
+		if err != nil {
+			return nil, errors.Wrap(err, "proxy failed")
+		}
+
+		proxies[proxyConfig.Path] = p
+		hcms[proxyConfig.Path] = hcm
 	}
 
 	r := chi.NewRouter()
@@ -181,30 +203,27 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	// Recoverer is a middleware that recovers from panics, logs the panic (and
 	// a backtrace), and returns a HTTP 500 (Internal Server Error) status if
 	// possible. Recoverer prints a request ID if one is provided.
-	//
 	r.Use(middleware.Recoverer)
 
-	// Handle the proxy path
-	if config.Proxy.Path != "" {
-		r.Handle(fmt.Sprintf("/%s", config.Proxy.Path), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Handle each proxy path
+	for path, p := range proxies {
+		r.Handle(fmt.Sprintf("/%s", path), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r.URL.Path = "/"
-			proxy.ServeHTTP(w, r)
+			p.ServeHTTP(w, r)
 		}))
-	} else {
-		r.Handle("/", proxy)
 	}
 
 	return &RPCGateway{
-		config: config,
-		proxy:  proxy,
-		hcm:    hcm,
+		config:  config,
+		proxies: proxies,
+		hcms:    hcms,
 		metrics: metrics.NewServer(
 			metrics.Config{
 				Port: config.Metrics.Port,
 			},
 		),
 		server: &http.Server{
-			Addr:              fmt.Sprintf(":%s", config.Proxy.Port),
+			Addr:              fmt.Sprintf(":%s", config.Port),
 			Handler:           r,
 			WriteTimeout:      time.Second * 15,
 			ReadTimeout:       time.Second * 15,
