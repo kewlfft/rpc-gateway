@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,10 +23,10 @@ func createConfig() Config {
 	return Config{
 		UpstreamTimeout: time.Second * 3,
 		HealthChecks: HealthCheckConfig{
-			Interval:         0,
-			Timeout:          0,
-			FailureThreshold: 0,
-			SuccessThreshold: 0,
+			Interval:         time.Second * 5,
+			Timeout:          time.Second * 2,
+			FailureThreshold: 3,
+			SuccessThreshold: 2,
 		},
 		Targets: []NodeProviderConfig{},
 	}
@@ -219,6 +220,24 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 
 	fakeRPCServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+
+		// Handle health check requests
+		if method, ok := req["method"].(string); ok {
+			switch method {
+			case "eth_blockNumber":
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+				return
+			case "eth_call":
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+				return
+			}
+		}
+
+		// Default: echo back the request body
 		w.Write(body)
 	}))
 	defer fakeRPCServer.Close()
