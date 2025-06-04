@@ -111,11 +111,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var lastErr error
 
+	// Read and buffer the request body once
+	var bodyBytes []byte
+	if r.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			p.logger.Error("failed to read request body", "error", err)
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+		r.Body.Close()
+	}
+
 	// Try each provider until one succeeds
 	for _, target := range p.targets {
 		name := target.Name()
 		if !p.hcm.IsHealthy(name) {
 			continue
+		}
+
+		// Create a new request with the buffered body
+		req := r.Clone(r.Context())
+		if bodyBytes != nil {
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 
 		// Create a buffered response writer to capture the response
@@ -125,7 +144,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Forward the request to the provider
-		target.ServeHTTP(bw, r)
+		target.ServeHTTP(bw, req)
 
 		// Check if the request was successful
 		if !p.HasNodeProviderFailed(bw.statusCode) {
