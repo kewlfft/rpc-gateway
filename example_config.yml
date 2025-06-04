@@ -1,5 +1,4 @@
 ---
-
 metrics:
   port: 9090 # port for prometheus metrics, served on /metrics and /
 
@@ -19,6 +18,7 @@ targets:
     connection:
       http:
         url: "https://eth.meowrpc.com"
+        # compression: true # Specify if the target supports request compression
   - name: "1rpc"
     connection:
       http:
@@ -27,7 +27,6 @@ targets:
     connection:
       http:
         url: "https://rpc.ankr.com/eth"
-        # compression: true # Specify if the target supports request compression
   - name: "publicnode"
     connection:
       http:
