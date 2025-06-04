@@ -68,9 +68,8 @@ targets: # the order here determines the failover order
 
 ### Path Configuration
 
-The `path` option in the proxy configuration allows you to specify a directory path for the RPC gateway. This is useful when you want to run multiple proxies on the same port:
+The `path` option in the proxy configuration allows you to specify a directory path for the RPC gateway:
 
 - With path configured (e.g., `path: "eth"`): The proxy will be accessible at `http://localhost:3000/eth`
 - Without path configured: The proxy will be accessible at `http://localhost:3000`
 
-This feature enables you to run multiple RPC gateways on the same port by configuring different paths for each instance, making it easier to manage multiple blockchain networks or different configurations.
