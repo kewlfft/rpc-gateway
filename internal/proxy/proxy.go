@@ -152,7 +152,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if p.HasNodeProviderFailed(bw.statusCode) {
 			metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
 			if hc := p.hcm.GetHealthChecker(name); hc != nil {
-				hc.TaintHealthCheck()
+				p.logger.Debug("tainting provider due to failed request", 
+					"provider", name,
+					"status", bw.statusCode,
+					"method", r.Method,
+					"path", r.URL.Path)
+				hc.TaintHTTP()
 			}
 			p.logger.Debug("provider failed, trying next", 
 				"provider", name, 
