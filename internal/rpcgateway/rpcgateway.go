@@ -17,9 +17,6 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-// HealthCheckStaggerDuration is the time to wait between starting health checks for different paths
-const HealthCheckStaggerDuration = 200 * time.Millisecond
-
 type RPCGateway struct {
 	config  RPCGatewayConfig
 	proxies map[string]*proxy.Proxy
@@ -46,7 +43,7 @@ func (r *RPCGateway) Start(c context.Context) error {
 	for path, hcm := range r.hcms {
 		// Add a small delay between each path's health check start
 		// This helps prevent rate limiting from providers that are used across multiple paths
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(350 * time.Millisecond)
 		if err := hcm.Start(c); err != nil {
 			return errors.Wrapf(err, "failed to start health check manager for path %s", path)
 		}
