@@ -5,8 +5,8 @@ BINARY_NAME=rpcgateway
 LDFLAGS=-s -w
 VERSION=0.1.0
 
-# Git information
-GIT_COMMIT := $(shell git rev-parse --short HEAD)
+# Git information - with fallbacks
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 
 # Build flags for optimal performance
@@ -18,6 +18,9 @@ VERSION_FLAGS=-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main
 all: clean build
 
 build:
+	@echo "Building $(BINARY_NAME) version $(VERSION)"
+	@echo "Git commit: $(GIT_COMMIT)"
+	@echo "Build time: $(BUILD_TIME)"
 	GOAMD64=v3 go build $(BUILD_FLAGS) -ldflags="$(LDFLAGS) $(VERSION_FLAGS)" -o $(BINARY_NAME) main.go
 
 clean:
