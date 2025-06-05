@@ -122,13 +122,6 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}
 	}
 
-	// Create a logger that will be used for HTTP request logging
-	httpLogger := slog.New(
-		slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-			Level: slog.LevelDebug, // Force DEBUG level for request logging
-		}),
-	)
-
 	// Initialize maps for proxies and health check managers
 	proxies := make(map[string]*proxy.Proxy)
 	hcms := make(map[string]*proxy.HealthCheckManager)
@@ -166,33 +159,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	r := chi.NewRouter()
 	// Only add request logger in DEBUG mode
 	if logLevel == slog.LevelDebug {
-		r.Use(func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				start := time.Now()
-				ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-				next.ServeHTTP(ww, r)
-				duration := time.Since(start)
-
-				httpLogger.Debug("Request completed",
-					"service", "rpc-gateway",
-					"httpRequest", map[string]interface{}{
-						"url":      r.URL.String(),
-						"method":   r.Method,
-						"path":     r.URL.Path,
-						"remoteIP": r.RemoteAddr,
-						"proto":    r.Proto,
-						"requestID": r.Header.Get("X-Request-ID"),
-						"scheme":   r.URL.Scheme,
-						"header":   r.Header,
-					},
-					"httpResponse", map[string]interface{}{
-						"status":  ww.Status(),
-						"bytes":   ww.BytesWritten(),
-						"elapsed": duration.Seconds(),
-					},
-				)
-			})
-		})
+		// Remove the request logging middleware
 	}
 
 	// Recoverer is a middleware that recovers from panics, logs the panic (and

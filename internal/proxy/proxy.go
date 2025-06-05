@@ -159,6 +159,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(duration)
 			metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
+			p.logger.Info("request handled by provider",
+				"provider", name,
+				"status", bw.statusCode,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"duration_ms", int64(duration * 1000),
+			)
 			return
 		}
 
