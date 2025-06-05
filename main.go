@@ -11,6 +11,13 @@ import (
 	"github.com/kewlfft/rpc-gateway/internal/rpcgateway"
 )
 
+// Version information
+var (
+	Version   = "dev"
+	GitCommit = "unknown"
+	BuildTime = "unknown"
+)
+
 func main() {
 	if len(os.Args) != 3 || os.Args[1] != "--config" {
 		fmt.Fprintf(os.Stderr, "Usage: %s --config <config-file>\n", os.Args[0])
@@ -18,7 +25,11 @@ func main() {
 	}
 
 	configPath := os.Args[2]
-	slog.Info("starting rpc-gateway", "config", configPath)
+	slog.Info("starting rpc-gateway", 
+		"config", configPath,
+		"version", Version,
+		"git_commit", GitCommit,
+		"build_time", BuildTime)
 
 	service, err := rpcgateway.NewRPCGatewayFromConfigFile(configPath)
 	if err != nil {
