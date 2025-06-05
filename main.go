@@ -37,10 +37,10 @@ func main() {
 
 	configPath := os.Args[2]
 	slog.Info("starting rpc-gateway", 
-		"config", configPath,
 		"version", Version,
 		"git_commit", GitCommit,
-		"build_time", BuildTime)
+		"build_time", BuildTime,
+		"config", configPath)
 
 	service, err := rpcgateway.NewRPCGatewayFromConfigFile(configPath)
 	if err != nil {
