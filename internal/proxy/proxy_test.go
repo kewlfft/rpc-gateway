@@ -75,6 +75,7 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	rpcGatewayConfig.DisableHealthChecks = true  // Disable health checks for this test
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
@@ -127,6 +128,7 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	rpcGatewayConfig.DisableHealthChecks = true  // Disable health checks for this test
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
@@ -183,6 +185,7 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	rpcGatewayConfig.DisableHealthChecks = true  // Disable health checks for this test
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
@@ -271,6 +274,7 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	rpcGatewayConfig.DisableHealthChecks = true  // Disable health checks for this test
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager so the
 	// no target will be tainted or marked as unhealthy by the

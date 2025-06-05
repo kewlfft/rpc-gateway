@@ -32,4 +32,5 @@ type Config struct {
 	HealthChecks    HealthCheckConfig `yaml:"healthChecks"`
 	Targets         []NodeProviderConfig `yaml:"targets"`
 	Logger          *slog.Logger
+	DisableHealthChecks bool          // If true, health checks will not be started
 }

@@ -87,11 +87,13 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		proxy.targets = append(proxy.targets, p)
 	}
 
-	// Start health check manager
-	if err := hcm.Start(ctx); err != nil {
-		return nil, fmt.Errorf("failed to start health check manager: %w", err)
+	// Start health check manager if not disabled
+	if !config.DisableHealthChecks {
+		if err := hcm.Start(ctx); err != nil {
+			return nil, fmt.Errorf("failed to start health check manager: %w", err)
+		}
+		config.Logger.Info("health check manager started")
 	}
-	config.Logger.Info("health check manager started")
 
 	return proxy, nil
 }
