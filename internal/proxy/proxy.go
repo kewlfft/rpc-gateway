@@ -137,6 +137,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Postpone health check since we're making a request
+		if hc := p.hcm.GetHealthChecker(name); hc != nil {
+			hc.PostponeCheck()
+		}
+
 		// Clone request with buffered body
 		req := r.Clone(r.Context())
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -159,7 +164,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(duration)
 			metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
-			p.logger.Info("request handled by provider",
+			p.logger.Debug("request handled by provider",
 				"provider", name,
 				"status", bw.statusCode,
 				"method", r.Method,

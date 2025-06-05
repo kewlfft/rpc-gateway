@@ -87,6 +87,7 @@ type HealthChecker struct {
 	blockNumber        uint64
 	gasLeft            uint64
 	mu                 sync.RWMutex
+	nextCheckTime      time.Time
 
 	// Taint state
 	taint TaintState
@@ -228,10 +229,18 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	h.gasLeft = gasLeft
 }
 
+// PostponeCheck resets the health check interval when a request is made
+func (h *HealthChecker) PostponeCheck() {
+	h.mu.Lock()
+	h.nextCheckTime = time.Now().Add(h.config.Interval)
+	h.mu.Unlock()
+}
+
 func (h *HealthChecker) Start(c context.Context) {
 	h.CheckAndSetHealth()
+	h.PostponeCheck() // Initialize next check time
 
-	ticker := time.NewTicker(h.config.Interval)
+	ticker := time.NewTicker(time.Second) // Check every second
 	defer ticker.Stop()
 
 	for {
@@ -239,7 +248,14 @@ func (h *HealthChecker) Start(c context.Context) {
 		case <-c.Done():
 			return
 		case <-ticker.C:
-			h.CheckAndSetHealth()
+			h.mu.RLock()
+			shouldCheck := time.Now().After(h.nextCheckTime)
+			h.mu.RUnlock()
+
+			if shouldCheck {
+				h.CheckAndSetHealth()
+				h.PostponeCheck()
+			}
 		}
 	}
 }
