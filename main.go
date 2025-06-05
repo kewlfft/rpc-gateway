@@ -18,9 +18,20 @@ var (
 	BuildTime = "unknown"
 )
 
+func printVersion() {
+	fmt.Printf("rpcgateway v%s (git: %s, built: %s)\n", Version, GitCommit, BuildTime)
+	os.Exit(0)
+}
+
 func main() {
+	// Check for version flag
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		printVersion()
+	}
+
 	if len(os.Args) != 3 || os.Args[1] != "--config" {
 		fmt.Fprintf(os.Stderr, "Usage: %s --config <config-file>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "       %s --version\n", os.Args[0])
 		os.Exit(1)
 	}
 
