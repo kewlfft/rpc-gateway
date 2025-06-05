@@ -17,6 +17,9 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+// HealthCheckStaggerDuration is the time to wait between starting health checks for different paths
+const HealthCheckStaggerDuration = 200 * time.Millisecond
+
 type RPCGateway struct {
 	config  RPCGatewayConfig
 	proxies map[string]*proxy.Proxy
@@ -38,10 +41,14 @@ func (r *RPCGateway) Start(c context.Context) error {
 		return errors.Wrap(err, "metrics port not available")
 	}
 
-	// Start health check managers first
-	for _, hcm := range r.hcms {
+	// Start health check managers with staggered starts
+	// This prevents concurrent health checks to the same provider domain across different paths
+	for path, hcm := range r.hcms {
+		// Add a small delay between each path's health check start
+		// This helps prevent rate limiting from providers that are used across multiple paths
+		time.Sleep(300 * time.Millisecond)
 		if err := hcm.Start(c); err != nil {
-			return errors.Wrap(err, "failed to start health check manager")
+			return errors.Wrapf(err, "failed to start health check manager for path %s", path)
 		}
 	}
 
@@ -146,6 +153,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 				slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 					Level: logLevel,
 				})),
+			DisableHealthChecks: true, // Disable automatic start of health checks
 		}
 
 		// Create proxy
@@ -155,6 +163,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}
 
 		proxies[proxyConfig.Path] = p
+		hcms[proxyConfig.Path] = p.GetHealthCheckManager()
 	}
 
 	r := chi.NewRouter()

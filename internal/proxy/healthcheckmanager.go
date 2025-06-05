@@ -82,6 +82,8 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 
 // Start starts the health check manager
 func (h *HealthCheckManager) Start(ctx context.Context) error {
+	// Start all checkers for this path concurrently
+	// The path-level staggering is handled by the proxy's path initialization
 	for _, checker := range h.checkers {
 		go checker.Start(ctx)
 	}

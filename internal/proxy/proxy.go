@@ -184,3 +184,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.logger.Error("all providers failed")
 	http.Error(w, "all providers failed", http.StatusServiceUnavailable)
 }
+
+// GetHealthCheckManager returns the health check manager for this proxy
+func (p *Proxy) GetHealthCheckManager() *HealthCheckManager {
+	return p.hcm
+}
