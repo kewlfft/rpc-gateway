@@ -190,6 +190,10 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 		h.mu.Lock()
 		h.blockNumber = 0
 		h.mu.Unlock()
+		h.config.Logger.Info("provider marked unhealthy due to block number check failure",
+			"provider", h.config.Name,
+			"error", err,
+			"path", h.config.Path)
 		return
 	}
 
@@ -212,6 +216,10 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	defer h.mu.Unlock()
 	if err != nil {
 		h.gasLeft = 0
+		h.config.Logger.Info("provider marked unhealthy due to gas left check failure",
+			"provider", h.config.Name,
+			"error", err,
+			"path", h.config.Path)
 		return
 	}
 	h.gasLeft = gasLeft
