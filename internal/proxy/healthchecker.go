@@ -115,7 +115,7 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		},
 	}
 
-	healthchecker.config.Logger.Info("Health checker created", 
+	healthchecker.config.Logger.Debug("Health checker created", 
 		"provider", config.Name, 
 		"url", config.URL,
 		"path", config.Path)
