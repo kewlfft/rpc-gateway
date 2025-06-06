@@ -86,8 +86,12 @@ type HealthChecker struct {
 	isHealthy          bool
 	blockNumber        uint64
 	gasLeft            uint64
-	mu                 sync.RWMutex
+	mu                 sync.RWMutex // Only for blockNumber, gasLeft, and taint state
 	timer              *time.Timer
+	postponeCh         chan struct{}
+	stopCh            chan struct{}
+	taintRemoveCh      chan struct{}
+	stopped           bool
 
 	// Taint state
 	taint TaintState
@@ -110,6 +114,9 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		httpClient: &http.Client{},
 		blockNumber: 1,
 		gasLeft:    1,
+		postponeCh: make(chan struct{}, 1),
+		stopCh:     make(chan struct{}),
+		taintRemoveCh: make(chan struct{}, 1),
 		taint: TaintState{
 			waitTime: healthCheckTaintConfig.InitialWaitTime,
 			config:   healthCheckTaintConfig,
@@ -231,16 +238,10 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 
 // PostponeCheck resets the health check timer when a request is made
 func (h *HealthChecker) PostponeCheck() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	
-	// Reset the timer
-	h.timer.Reset(h.config.Interval)
-	
-	h.config.Logger.Debug("health check postponed", 
-		"provider", h.config.Name,
-		"path", h.config.Path,
-		"next_check", time.Now().Add(h.config.Interval))
+	select {
+	case h.postponeCh <- struct{}{}:
+	default:
+	}
 }
 
 func (h *HealthChecker) Start(c context.Context) {
@@ -248,23 +249,37 @@ func (h *HealthChecker) Start(c context.Context) {
 	h.CheckAndSetHealth()
 
 	// Create a timer that will fire when we should do the next check
-	h.mu.Lock()
-	h.timer = time.NewTimer(h.config.Interval)
-	h.mu.Unlock()
-	defer h.timer.Stop()
+	timer := time.NewTimer(h.config.Interval)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-c.Done():
-			return
-		case <-h.timer.C:
-			h.config.Logger.Debug("timer fired, doing health check", 
-				"provider", h.config.Name,
-				"path", h.config.Path)
-			h.CheckAndSetHealth()
-			// Reset timer for next interval
 			h.mu.Lock()
-			h.timer.Reset(h.config.Interval)
+			if !h.stopped {
+				close(h.stopCh)
+				h.stopped = true
+			}
+			h.mu.Unlock()
+			return
+		case <-timer.C:
+			h.CheckAndSetHealth()
+			timer.Reset(h.config.Interval)
+		case <-h.postponeCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(h.config.Interval)
+		case <-h.taintRemoveCh:
+			// Clean up taint removal timer
+			h.mu.Lock()
+			if h.taint.removalTimer != nil {
+				h.taint.removalTimer.Stop()
+				h.taint.removalTimer = nil
+			}
 			h.mu.Unlock()
 		}
 	}
@@ -274,12 +289,15 @@ func (h *HealthChecker) Stop(_ context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Clean up taint removal timer
-	if h.taint.removalTimer != nil {
-		h.taint.removalTimer.Stop()
-		h.taint.removalTimer = nil
+	if !h.stopped {
+		close(h.stopCh)
+		h.stopped = true
+		// Signal cleanup of taint removal timer
+		select {
+		case h.taintRemoveCh <- struct{}{}:
+		default:
+		}
 	}
-
 	return nil
 }
 
@@ -331,7 +349,19 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 
 	// Set taint state
 	h.taint.isTainted = true
-	h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, h.RemoveTaint)
+	h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, func() {
+		h.config.Logger.Debug("taint removal timer fired", 
+			"provider", h.config.Name,
+			"path", h.config.Path,
+			"waitTime", h.taint.waitTime,
+			"time", time.Now())
+		h.RemoveTaint()
+		// Signal cleanup
+		select {
+		case h.taintRemoveCh <- struct{}{}:
+		default:
+		}
+	})
 
 	h.config.Logger.Info("RPC provider tainted", 
 		"name", h.config.Name,
@@ -368,7 +398,7 @@ func (h *HealthChecker) RemoveTaint() {
 	h.config.Logger.Info("RPC provider taint removed", 
 		"name", h.config.Name,
 		"nextTaintWait", h.taint.waitTime,
-	)
+		"time", time.Now())
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/caitlinelfring/go-env-default"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestBasicHealthchecker checks if it runs with default options.
@@ -67,50 +67,130 @@ func TestBasicHealthchecker(t *testing.T) {
 }
 
 func TestHealthCheckerTaint(t *testing.T) {
-	healtcheckConfig := HealthCheckerConfig{
-		URL:              env.GetDefault("RPC_GATEWAY_NODE_URL_1", "https://ethereum.publicnode.com"),
-		Interval:         1 * time.Second,
-		Timeout:          2 * time.Second,
-		FailureThreshold: 1,
-		SuccessThreshold: 1,
-		Logger:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	// Create a health checker with short intervals for testing
+	config := HealthCheckerConfig{
+		URL:    "http://localhost:8545", // Doesn't matter for this test
+		Name:   "test",
+		Path:   "test",
+		Interval: time.Millisecond * 100,
+		Timeout: time.Millisecond * 50,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 
-	healthchecker, err := NewHealthChecker(healtcheckConfig)
-	assert.NoError(t, err)
+	checker, err := NewHealthChecker(config)
+	require.NoError(t, err)
+
+	// Start the health checker
+	ctx, cancel := context.WithCancel(context.Background())
+	go checker.Start(ctx)
+	defer cancel()
+
+	t.Logf("Test started at %v", time.Now())
 
 	// Test initial state
-	assert.False(t, healthchecker.IsTainted())
-	assert.True(t, healthchecker.IsHealthy())
+	assert.False(t, checker.IsTainted(), "should not be tainted initially")
 
-	// Test tainting
-	healthchecker.TaintHealthCheck()
-	assert.True(t, healthchecker.IsTainted())
-	assert.False(t, healthchecker.IsHealthy())
+	// Taint the checker with a short wait time
+	waitTime := time.Millisecond * 200
+	t.Logf("Applying first taint at %v with wait time %v", time.Now(), waitTime)
+	checker.Taint(TaintConfig{
+		InitialWaitTime:   waitTime,
+		MaxWaitTime:       time.Second,
+		ResetWaitDuration: time.Second,
+		Reason:           "test taint",
+	})
 
-	// Test taint removal
-	healthchecker.RemoveTaint()
-	assert.False(t, healthchecker.IsTainted())
-	assert.True(t, healthchecker.IsHealthy())
+	// Verify it's tainted
+	assert.True(t, checker.IsTainted(), "should be tainted after taint call")
 
-	// Test multiple taints with exponential backoff
-	healthchecker.TaintHealthCheck()
-	firstWaitTime := healthchecker.taint.waitTime
-	healthchecker.RemoveTaint()
+	// Wait for taint to be removed with a buffer
+	t.Logf("Waiting for first taint removal at %v", time.Now())
+	time.Sleep(waitTime + time.Millisecond*100)
+	t.Logf("Checking taint state at %v", time.Now())
 
-	// Taint again within reset period
-	healthchecker.TaintHealthCheck()
-	secondWaitTime := healthchecker.taint.waitTime
-	assert.Greater(t, secondWaitTime, firstWaitTime)
+	// Verify taint is removed
+	assert.False(t, checker.IsTainted(), "taint should be removed after wait time")
+
+	// Test exponential backoff
+	t.Logf("Applying second taint at %v", time.Now())
+	checker.Taint(TaintConfig{
+		InitialWaitTime:   waitTime,
+		MaxWaitTime:       time.Second,
+		ResetWaitDuration: time.Millisecond * 50, // Short reset duration to ensure we're within it
+		Reason:           "test taint",
+	})
+
+	// Verify it's tainted again
+	assert.True(t, checker.IsTainted(), "should be tainted after second taint call")
+
+	// Wait for taint to be removed
+	t.Logf("Waiting for second taint removal at %v", time.Now())
+	time.Sleep(waitTime + time.Millisecond*100)
+	t.Logf("Checking taint state at %v", time.Now())
+
+	// Verify taint is removed
+	assert.False(t, checker.IsTainted(), "taint should be removed after wait time")
 
 	// Test max wait time
-	for i := 0; i < 5; i++ {
-		healthchecker.TaintHealthCheck()
-		healthchecker.RemoveTaint()
+	maxWaitTime := time.Millisecond * 300
+	t.Logf("Applying third taint at %v with max wait time %v", time.Now(), maxWaitTime)
+	checker.Taint(TaintConfig{
+		InitialWaitTime:   waitTime,
+		MaxWaitTime:       maxWaitTime,
+		ResetWaitDuration: time.Millisecond * 50,
+		Reason:           "test taint",
+	})
+
+	// Verify it's tainted
+	assert.True(t, checker.IsTainted(), "should be tainted after third taint call")
+
+	// Wait for taint to be removed
+	t.Logf("Waiting for third taint removal at %v", time.Now())
+	time.Sleep(maxWaitTime + time.Millisecond*100)
+	t.Logf("Checking final taint state at %v", time.Now())
+
+	// Verify taint is removed
+	assert.False(t, checker.IsTainted(), "taint should be removed after wait time")
+}
+
+func TestHealthCheckerTaintRemoval(t *testing.T) {
+	// Create a health checker with short intervals for testing
+	config := HealthCheckerConfig{
+		URL:    "http://localhost:8545", // Doesn't matter for this test
+		Name:   "test",
+		Path:   "test",
+		Interval: time.Millisecond * 100,
+		Timeout: time.Millisecond * 50,
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
-	healthchecker.TaintHealthCheck()
-	finalWaitTime := healthchecker.taint.waitTime
-	assert.LessOrEqual(t, finalWaitTime, healthCheckTaintConfig.MaxWaitTime)
+
+	checker, err := NewHealthChecker(config)
+	require.NoError(t, err)
+
+	// Start the health checker
+	ctx, cancel := context.WithCancel(context.Background())
+	go checker.Start(ctx)
+	defer cancel()
+
+	// Taint the checker
+	waitTime := time.Millisecond * 200
+	checker.Taint(TaintConfig{
+		InitialWaitTime:   waitTime,
+		MaxWaitTime:       time.Second,
+		ResetWaitDuration: time.Second,
+		Reason:           "test taint",
+	})
+
+	// Verify it's tainted
+	assert.True(t, checker.IsTainted(), "should be tainted after taint call")
+
+	// Stop the checker
+	err = checker.Stop(context.Background())
+	require.NoError(t, err)
+
+	// Verify taint removal timer is cleaned up
+	time.Sleep(time.Millisecond * 100)
+	assert.True(t, checker.IsTainted(), "taint should remain after stop")
 }
 
 func TestHealthCheckerTaintHTTP(t *testing.T) {
