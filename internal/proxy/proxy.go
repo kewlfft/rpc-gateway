@@ -145,7 +145,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"method", r.Method,
 				"path", r.URL.Path,
 				"duration_ms", int64(duration * 1000),
-				"headers", rec.Header(),
 			)
 			return
 		}
@@ -164,7 +163,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"status", rec.Code,
 			"method", r.Method,
 			"path", r.URL.Path,
-			"headers", r.Header,
 			"duration", Duration(duration),
 		)
 	}
