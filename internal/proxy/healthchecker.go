@@ -335,11 +335,6 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 	// Set taint state
 	h.taint.isTainted = true
 	h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, func() {
-		h.config.Logger.Debug("taint removal timer fired", 
-			"provider", h.config.Name,
-			"path", h.config.Path,
-			"waitTime", h.taint.waitTime,
-			"time", time.Now())
 		h.RemoveTaint()
 		// Signal cleanup
 		select {
