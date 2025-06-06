@@ -48,26 +48,39 @@ func TestBasicHealthchecker(t *testing.T) {
 	// Wait for a health check cycle
 	time.Sleep(time.Millisecond * 150)
 
-	assert.NotZero(t, healthchecker.BlockNumber())
+	// Verify that the health checker is not tainted initially
+	assert.False(t, healthchecker.IsTainted())
 	assert.True(t, healthchecker.IsHealthy())
 
-	// Test unhealthy states
-	healthchecker.blockNumber = 0
+	// Taint the health checker
+	healthchecker.TaintHealthCheck()
+	assert.True(t, healthchecker.IsTainted())
 	assert.False(t, healthchecker.IsHealthy())
 
-	healthchecker.blockNumber = 1
-	healthchecker.gasLeft = 0
-	assert.False(t, healthchecker.IsHealthy())
-
-	healthchecker.blockNumber = 1
-	healthchecker.gasLeft = 1
+	// Remove taint
+	healthchecker.RemoveTaint()
+	assert.False(t, healthchecker.IsTainted())
 	assert.True(t, healthchecker.IsHealthy())
 }
 
 func TestHealthCheckerTaint(t *testing.T) {
+	// Create a mock server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			// Mock eth_blockNumber response
+			if r.Method == "POST" {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
 	// Create a health checker with short intervals for testing
 	config := HealthCheckerConfig{
-		URL:    "http://localhost:8545", // Doesn't matter for this test
+		URL:    server.URL,
 		Name:   "test",
 		Path:   "test",
 		Interval: time.Millisecond * 100,
@@ -130,21 +143,20 @@ func TestHealthCheckerTaint(t *testing.T) {
 	assert.False(t, checker.IsTainted(), "taint should be removed after wait time")
 
 	// Test max wait time
-	maxWaitTime := time.Millisecond * 300
-	t.Logf("Applying third taint at %v with max wait time %v", time.Now(), maxWaitTime)
+	t.Logf("Applying third taint at %v with max wait time 300ms", time.Now())
 	checker.Taint(TaintConfig{
 		InitialWaitTime:   waitTime,
-		MaxWaitTime:       maxWaitTime,
+		MaxWaitTime:       time.Millisecond * 300,
 		ResetWaitDuration: time.Millisecond * 50,
 		Reason:           "test taint",
 	})
 
-	// Verify it's tainted
+	// Verify it's tainted again
 	assert.True(t, checker.IsTainted(), "should be tainted after third taint call")
 
 	// Wait for taint to be removed
 	t.Logf("Waiting for third taint removal at %v", time.Now())
-	time.Sleep(maxWaitTime + time.Millisecond*100)
+	time.Sleep(waitTime + time.Millisecond*100)
 	t.Logf("Checking final taint state at %v", time.Now())
 
 	// Verify taint is removed

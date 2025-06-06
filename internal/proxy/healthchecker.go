@@ -75,7 +75,6 @@ type HealthChecker struct {
 	config              HealthCheckerConfig
 	client              *rpc.Client
 	httpClient          *http.Client
-	isHealthy          bool
 	blockNumber        uint64
 	gasLeft            uint64
 	mu                 sync.RWMutex // Only for blockNumber, gasLeft, and taint state
@@ -104,8 +103,6 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		config:     config,
 		client:     client,
 		httpClient: &http.Client{},
-		blockNumber: 1,
-		gasLeft:    1,
 		postponeCh: make(chan struct{}, 1),
 		stopCh:     make(chan struct{}),
 		taintRemoveCh: make(chan struct{}, 1),
@@ -173,6 +170,9 @@ func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 // - `eth_call` - to get the gas left
 // And sets the health status based on the responses.
 func (h *HealthChecker) CheckAndSetHealth() {
+	if h.IsTainted() {
+		return
+	}
 	go h.checkAndSetBlockNumberHealth()
 	go h.checkAndSetGasLeftHealth()
 }
@@ -190,13 +190,11 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 
 	blockNumber, err := h.checkBlockNumber(ctx)
 	if err != nil {
-		h.mu.Lock()
-		h.blockNumber = 0
-		h.mu.Unlock()
-		h.config.Logger.Info("provider marked unhealthy due to block number check failure",
+		h.config.Logger.Info("provider tainted due to block number check failure",
 			"provider", h.config.Name,
 			"error", err,
 			"path", h.config.Path)
+		h.TaintHealthCheck()
 		return
 	}
 
@@ -215,17 +213,17 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	defer cancel()
 
 	gasLeft, err := h.checkGasLeft(c)
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	if err != nil {
-		h.gasLeft = 0
-		h.config.Logger.Info("provider marked unhealthy due to gas left check failure",
+		h.config.Logger.Info("provider tainted due to gas left check failure",
 			"provider", h.config.Name,
 			"error", err,
 			"path", h.config.Path)
-		return
+			h.TaintHealthCheck()
+			return
 	}
+	h.mu.Lock()
 	h.gasLeft = gasLeft
+	h.mu.Unlock()
 }
 
 // PostponeCheck resets the health check timer when a request is made
@@ -297,13 +295,8 @@ func (h *HealthChecker) IsHealthy() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	// If tainted, always return unhealthy
-	if h.taint.isTainted {
-		return false
-	}
-
-	// Consider healthy if both gasLeft and blockNumber are positive
-	return h.gasLeft > 0 && h.blockNumber > 0
+	// Being tainted is equivalent to unhealthy
+	return !h.taint.isTainted
 }
 
 func (h *HealthChecker) IsTainted() bool {
