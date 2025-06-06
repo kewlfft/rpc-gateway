@@ -87,7 +87,7 @@ type HealthChecker struct {
 	blockNumber        uint64
 	gasLeft            uint64
 	mu                 sync.RWMutex
-	nextCheckTime      time.Time
+	timer              *time.Timer
 
 	// Taint state
 	taint TaintState
@@ -229,33 +229,43 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	h.gasLeft = gasLeft
 }
 
-// PostponeCheck resets the health check interval when a request is made
+// PostponeCheck resets the health check timer when a request is made
 func (h *HealthChecker) PostponeCheck() {
 	h.mu.Lock()
-	h.nextCheckTime = time.Now().Add(h.config.Interval)
-	h.mu.Unlock()
+	defer h.mu.Unlock()
+	
+	// Reset the timer
+	h.timer.Reset(h.config.Interval)
+	
+	h.config.Logger.Debug("health check postponed", 
+		"provider", h.config.Name,
+		"path", h.config.Path,
+		"next_check", time.Now().Add(h.config.Interval))
 }
 
 func (h *HealthChecker) Start(c context.Context) {
+	// Do an immediate health check on startup
 	h.CheckAndSetHealth()
-	h.PostponeCheck() // Initialize next check time
 
-	ticker := time.NewTicker(time.Second) // Check every second
-	defer ticker.Stop()
+	// Create a timer that will fire when we should do the next check
+	h.mu.Lock()
+	h.timer = time.NewTimer(h.config.Interval)
+	h.mu.Unlock()
+	defer h.timer.Stop()
 
 	for {
 		select {
 		case <-c.Done():
 			return
-		case <-ticker.C:
-			h.mu.RLock()
-			shouldCheck := time.Now().After(h.nextCheckTime)
-			h.mu.RUnlock()
-
-			if shouldCheck {
-				h.CheckAndSetHealth()
-				h.PostponeCheck()
-			}
+		case <-h.timer.C:
+			h.config.Logger.Debug("timer fired, doing health check", 
+				"provider", h.config.Name,
+				"path", h.config.Path)
+			h.CheckAndSetHealth()
+			// Reset timer for next interval
+			h.mu.Lock()
+			h.timer.Reset(h.config.Interval)
+			h.mu.Unlock()
 		}
 	}
 }

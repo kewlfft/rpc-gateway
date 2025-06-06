@@ -143,7 +143,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 				slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 					Level: logLevel,
 				})),
-			DisableHealthChecks: true, // Disable automatic start of health checks
+			DisableHealthChecks: true, // Always disable health checks in NewProxy
 		}
 
 		// Create proxy
