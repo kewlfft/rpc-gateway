@@ -5,7 +5,6 @@ go 1.23.0
 toolchain go1.24.3
 
 require (
-	github.com/caitlinelfring/go-env-default v1.1.0
 	github.com/ethereum/go-ethereum v1.15.11
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/go-http-utils/headers v0.0.0-20181008091004-fed159eddc2a
