@@ -6,15 +6,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
-
-	"github.com/go-http-utils/headers"
 )
 
 func Gunzip(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		// Skip if not gzip.
 		//
-		if !strings.Contains(r.Header.Get(headers.ContentEncoding), "gzip") {
+		if !strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
 			next.ServeHTTP(w, r)
 
 			return
@@ -31,7 +29,7 @@ func Gunzip(next http.Handler) http.Handler {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		}
 
-		r.Header.Del(headers.ContentEncoding)
+		r.Header.Del("Content-Encoding")
 		r.Body = io.NopCloser(body)
 		r.ContentLength = int64(body.Len())
 

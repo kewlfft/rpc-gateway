@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,24 +37,6 @@ type Duration time.Duration
 
 func (d Duration) LogValue() slog.Value {
 	return slog.StringValue(time.Duration(d).String())
-}
-
-type BufferedResponseWriter struct {
-	header     http.Header
-	body       *bytes.Buffer
-	statusCode int
-}
-
-func (w *BufferedResponseWriter) Header() http.Header {
-	return w.header
-}
-
-func (w *BufferedResponseWriter) Write(b []byte) (int, error) {
-	return w.body.Write(b)
-}
-
-func (w *BufferedResponseWriter) WriteHeader(statusCode int) {
-	w.statusCode = statusCode
 }
 
 // Proxy represents an RPC proxy with health checking and failover
@@ -108,16 +91,6 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 		statusCode == http.StatusServiceUnavailable
 }
 
-// copyHeaders copies all headers from src to dst without duplicating Content-* logic
-func (p *Proxy) copyHeaders(dst http.ResponseWriter, src http.Header) {
-	dstHeader := dst.Header()
-	for k, values := range src {
-		for _, v := range values {
-			dstHeader.Add(k, v)
-		}
-	}
-}
-
 // ServeHTTP handles incoming HTTP requests
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -146,19 +119,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		req := r.Clone(r.Context())
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-		// Use buffered response writer with pre-allocated buffer
-		bw := &BufferedResponseWriter{
-			header: make(http.Header, 4), // Pre-allocate for common headers
-			body:   bytes.NewBuffer(make([]byte, 0, 32*1024)), // 32KB initial capacity
-		}
+		// Use httptest.NewRecorder to capture headers and body
+		rec := httptest.NewRecorder()
 
-		target.ServeHTTP(bw, req)
+		target.ServeHTTP(rec, req)
 		duration := time.Since(start).Seconds()
 
-		if !p.HasNodeProviderFailed(bw.statusCode) {
-			p.copyHeaders(w, bw.header)
-			w.WriteHeader(bw.statusCode)
-			_, err := io.Copy(w, bw.body)
+		if !p.HasNodeProviderFailed(rec.Code) {
+			// Copy headers
+			for k, values := range rec.Header() {
+				if len(values) > 0 {
+					w.Header().Set(k, values[0])
+				}
+			}
+			w.WriteHeader(rec.Code)
+			_, err := w.Write(rec.Body.Bytes())
 			if err != nil {
 				p.logger.Error("failed to write response", "error", err)
 			}
@@ -166,10 +141,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
 			p.logger.Debug("request handled by provider",
 				"provider", name,
-				"status", bw.statusCode,
+				"status", rec.Code,
 				"method", r.Method,
 				"path", r.URL.Path,
 				"duration_ms", int64(duration * 1000),
+				"headers", rec.Header(),
 			)
 			return
 		}
@@ -185,7 +161,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		p.logger.Debug("provider failed, trying next",
 			"provider", name,
-			"status", bw.statusCode,
+			"status", rec.Code,
 			"method", r.Method,
 			"path", r.URL.Path,
 			"headers", r.Header,

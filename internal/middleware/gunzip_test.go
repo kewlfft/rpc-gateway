@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-http-utils/headers"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -30,7 +29,7 @@ func TestGunzip(t *testing.T) {
 
 			assert.Equal(t, ethChainID, body.String())
 			assert.Equal(t, int64(len(ethChainID)), r.ContentLength)
-			assert.NotContains(t, r.Header.Get(headers.ContentEncoding), "gzip")
+			assert.NotContains(t, r.Header.Get("Content-Encoding"), "gzip")
 		})
 
 		body := &bytes.Buffer{}
@@ -43,7 +42,7 @@ func TestGunzip(t *testing.T) {
 		assert.Nil(t, w.Close())
 
 		request := httptest.NewRequest(http.MethodPost, "http://localhost", body)
-		request.Header.Set(headers.ContentEncoding, "gzip")
+		request.Header.Set("Content-Encoding", "gzip")
 
 		Gunzip(tests).
 			ServeHTTP(httptest.NewRecorder(), request)
@@ -61,7 +60,7 @@ func TestGunzip(t *testing.T) {
 
 			assert.Equal(t, ethChainID, body.String())
 			assert.Equal(t, int64(len(ethChainID)), r.ContentLength)
-			assert.NotContains(t, r.Header.Get(headers.ContentEncoding), "gzip")
+			assert.NotContains(t, r.Header.Get("Content-Encoding"), "gzip")
 		})
 
 		Gunzip(tests).

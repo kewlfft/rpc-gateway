@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/kewlfft/rpc-gateway/internal/middleware"
-	"github.com/go-http-utils/headers"
 )
 
 type NodeProvider struct {
@@ -33,7 +32,7 @@ func (n *NodeProvider) Name() string {
 }
 
 func (n *NodeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	gzip := strings.Contains(r.Header.Get(headers.ContentEncoding), "gzip")
+	gzip := strings.Contains(r.Header.Get("Content-Encoding"), "gzip")
 
 	if !n.Config.Connection.HTTP.Compression && gzip {
 		middleware.Gunzip(n.Proxy).ServeHTTP(w, r)

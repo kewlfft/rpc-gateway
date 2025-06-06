@@ -9,8 +9,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-http-utils/headers"
 	"github.com/pkg/errors"
+)
+
+const (
+	contentType = "Content-Type"
 )
 
 type JSONRPCResponse struct {
@@ -61,8 +64,7 @@ func performGasLeftCall(c context.Context, client *http.Client, url string) (uin
 		return 0, fmt.Errorf("performGasLeftCall: NewRequestWithContext error: %w", err)
 	}
 
-	r.Header.Set(headers.ContentType, "application/json")
-	r.Header.Set(headers.UserAgent, userAgent)
+	r.Header.Set(contentType, "application/json")
 
 	resp, err := client.Do(r)
 	if err != nil {

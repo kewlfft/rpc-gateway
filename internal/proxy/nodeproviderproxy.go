@@ -15,18 +15,22 @@ func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, er
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	// Set up the request for the upstream server
 	proxy.Director = func(r *http.Request) {
 		r.Host = target.Host
 		r.URL.Scheme = target.Scheme
 		r.URL.Host = target.Host
-		// Keep the original path from the request
-		// r.URL.Path = target.Path
 	}
 
 	// Add custom error handler to properly handle response body errors
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		// Don't try to read from the response body if there's an error
-		w.WriteHeader(http.StatusBadGateway)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+	}
+
+	// Prevent automatic decompression of gzipped responses
+	proxy.Transport = &http.Transport{
+		DisableCompression: true,
 	}
 
 	return proxy, nil
