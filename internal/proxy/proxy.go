@@ -123,7 +123,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rec := httptest.NewRecorder()
 
 		target.ServeHTTP(rec, req)
-		duration := time.Since(start).Seconds()
 
 		if !p.HasNodeProviderFailed(rec.Code) {
 			// Copy headers
