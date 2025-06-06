@@ -163,7 +163,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"status", rec.Code,
 			"method", r.Method,
 			"path", r.URL.Path,
-			"duration", Duration(duration),
+			"duration_ms", int64(duration * 1000),
 		)
 	}
 
