@@ -343,7 +343,7 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 		}
 	})
 
-	h.config.Logger.Info("RPC provider tainted", 
+	h.config.Logger.Info("provider tainted", 
 		"name", h.config.Name,
 		"reason", config.Reason,
 		"waitTime", h.taint.waitTime,
@@ -373,7 +373,7 @@ func (h *HealthChecker) RemoveTaint() {
 	h.taint.lastRemoval = time.Now()
 	h.taint.removalTimer = nil
 	
-	h.config.Logger.Info("RPC provider taint removed", 
+	h.config.Logger.Info("provider taint removed", 
 		"name", h.config.Name,
 		"nextTaintWait", h.taint.waitTime,
 		"time", time.Now())
