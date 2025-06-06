@@ -61,8 +61,6 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 			Name:             target.Name,
 			Interval:         config.HealthChecks.Interval,
 			Timeout:          config.HealthChecks.Timeout,
-			FailureThreshold: config.HealthChecks.FailureThreshold,
-			SuccessThreshold: config.HealthChecks.SuccessThreshold,
 			Path:            config.Path,
 		})
 		if err != nil {

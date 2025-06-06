@@ -1,8 +1,5 @@
 # Binary name
 BINARY_NAME=rpcgateway
-
-# Build flags
-LDFLAGS=-s -w
 VERSION=0.1.0
 
 # Git information - with fallbacks
@@ -10,7 +7,8 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 
 # Build flags for optimal performance
-BUILD_FLAGS=-v -trimpath -buildmode=pie -tags=netgo -gcflags="-l=4" -asmflags="-trimpath" -race=false
+LDFLAGS=-s -w
+BUILD_FLAGS=-trimpath -buildmode=pie -gcflags="-l=4" -asmflags="-trimpath" -race=false
 VERSION_FLAGS=-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildTime=$(BUILD_TIME)
 
 .PHONY: all build clean test lint

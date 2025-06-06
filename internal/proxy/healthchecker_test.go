@@ -34,8 +34,6 @@ func TestBasicHealthchecker(t *testing.T) {
 		Name:             "test",
 		Interval:         time.Millisecond * 100, // Much shorter interval for testing
 		Timeout:          time.Second,
-		FailureThreshold: 1,
-		SuccessThreshold: 1,
 		Logger:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 

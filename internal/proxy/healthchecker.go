@@ -61,12 +61,6 @@ type HealthCheckerConfig struct {
 	// How long to wait for responses before failing
 	Timeout time.Duration `yaml:"healthcheckTimeout"`
 
-	// Try FailureThreshold times before marking as unhealthy
-	FailureThreshold uint `yaml:"healthcheckInterval"`
-
-	// Minimum consecutive successes required to mark as healthy
-	SuccessThreshold uint `yaml:"healthcheckInterval"`
-
 	// Maximum allowed block difference between providers
 	BlockDiffThreshold uint `yaml:"blockDiffThreshold"`
 
@@ -81,8 +75,6 @@ type HealthChecker struct {
 	config              HealthCheckerConfig
 	client              *rpc.Client
 	httpClient          *http.Client
-	consecutiveFailures uint
-	consecutiveSuccesses uint
 	isHealthy          bool
 	blockNumber        uint64
 	gasLeft            uint64
@@ -368,9 +360,7 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 		"reason", config.Reason,
 		"waitTime", h.taint.waitTime,
 		"nextRemoval", time.Now().Add(h.taint.waitTime),
-		"path", h.config.Path,
-		"consecutiveFailures", h.consecutiveFailures,
-		"consecutiveSuccesses", h.consecutiveSuccesses)
+		"path", h.config.Path)
 }
 
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration

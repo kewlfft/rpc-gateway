@@ -8,12 +8,10 @@ proxies:
   - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
     upstreamTimeout: "1s" # when is a request considered timed out
     healthChecks:
-      interval: "5s" # how often to do healthchecks
+      interval: "10s" # how often to do healthchecks
       timeout: "1s" # when should the timeout occur and considered unhealthy
-      failureThreshold: 2 # how many failed checks until marked as unhealthy
-      successThreshold: 1 # how many successes to be marked as healthy again
       blockDiffThreshold: 2 # maximum allowed block difference between providers
-    targets:
+    targets: # the order here determines the failover order
       - name: "meow"
         connection:
           http:
@@ -37,8 +35,6 @@ proxies:
     healthChecks:
       interval: "5s"
       timeout: "1s"
-      failureThreshold: 2
-      successThreshold: 1
       blockDiffThreshold: 2
     targets:
       - name: "polygon-rpc"
