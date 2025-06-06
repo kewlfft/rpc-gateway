@@ -137,20 +137,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				p.logger.Error("failed to write response", "error", err)
 			}
-			metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(duration)
+			durationMs := time.Since(start).Milliseconds()
+			metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(float64(durationMs) / 1000)
 			metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
 			p.logger.Debug("request handled by provider",
 				"provider", name,
 				"status", rec.Code,
 				"method", r.Method,
 				"path", r.URL.Path,
-				"duration_ms", int64(duration * 1000),
+				"duration_ms", durationMs,
 			)
 			return
 		}
 
 		// Provider failed, record and taint
-		metricRequestDuration.WithLabelValues(r.Method, name, "error").Observe(duration)
+		durationMs := time.Since(start).Milliseconds()
+		metricRequestDuration.WithLabelValues(r.Method, name, "error").Observe(float64(durationMs) / 1000)
 		metricRequestErrors.WithLabelValues(r.Method, name, "error").Inc()
 		metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
 
@@ -163,7 +165,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"status", rec.Code,
 			"method", r.Method,
 			"path", r.URL.Path,
-			"duration_ms", int64(duration * 1000),
+			"duration_ms", durationMs,
 		)
 	}
 
