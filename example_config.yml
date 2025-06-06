@@ -30,7 +30,7 @@ proxies:
           http:
             url: "https://ethereum.publicnode.com"
 
-  - path: "polygon" # another proxy example
+  - path: "pol" # another proxy example
     upstreamTimeout: "1s"
     healthChecks:
       interval: "5s"
