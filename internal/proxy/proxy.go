@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/errors"
@@ -126,7 +127,6 @@ func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.T
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// Read and buffer request body once
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
@@ -140,55 +140,58 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Postpone health check since we're making a request
 		if hc := p.hcm.GetHealthChecker(name); hc != nil {
 			hc.PostponeCheck()
 		}
 
-		// Clone request with buffered body
 		req := r.Clone(r.Context())
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-		// Use httptest.NewRecorder to capture headers and body
 		rec := httptest.NewRecorder()
-
 		target.ServeHTTP(rec, req)
 
-		// Check for errors in context
-		if err, ok := req.Context().Value("error").(error); ok {
-			statusCode, _ := req.Context().Value("statusCode").(int)
+		ctx := req.Context()
+		if err, ok := ctx.Value("error").(error); ok {
+			statusCode, _ := ctx.Value("statusCode").(int)
 			p.handleProviderFailure(name, r, start, statusCode, err)
 			continue
 		}
 
-		if !p.HasNodeProviderFailed(rec.Code) {
-			// Copy headers
-			for k, values := range rec.Header() {
-				if len(values) > 0 {
-					w.Header().Set(k, values[0])
-				}
+		if p.HasNodeProviderFailed(rec.Code) {
+			p.handleProviderFailure(name, r, start, rec.Code, nil)
+			continue
+		}
+
+		for k, values := range rec.Header() {
+			for _, v := range values {
+				w.Header().Add(k, v)
 			}
+		}
+
+		respBody := rec.Body.Bytes()
+		if len(respBody) == 0 {
 			w.WriteHeader(rec.Code)
-			_, err := w.Write(rec.Body.Bytes())
-			if err != nil {
+		} else {
+			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+			w.WriteHeader(rec.Code)
+			if _, err := w.Write(respBody); err != nil {
 				p.writeErrorResponse(w, r, "Failed to write response", http.StatusInternalServerError)
 				return
 			}
-			durationMs := time.Since(start).Milliseconds()
-			metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(float64(durationMs) / 1000)
-			metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
-			p.logger.Debug("request handled by provider",
-				"provider", name,
-				"status", rec.Code,
-				"method", r.Method,
-				"config_path", p.hcm.path,
-				"duration_ms", durationMs,
-			)
-			return
 		}
 
-		// Provider failed with non-2xx status code
-		p.handleProviderFailure(name, r, start, rec.Code, nil)
+		durationMs := time.Since(start).Milliseconds()
+		metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(float64(durationMs) / 1000)
+		metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
+
+		p.logger.Debug("request handled by provider",
+			"provider", name,
+			"status", rec.Code,
+			"method", r.Method,
+			"config_path", p.hcm.path,
+			"duration_ms", durationMs,
+		)
+		return
 	}
 
 	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)

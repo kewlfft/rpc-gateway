@@ -25,34 +25,40 @@ var pool = &transportPool{
 
 // getTransport returns a transport with the specified timeout, creating it if necessary
 func (p *transportPool) getTransport(timeout time.Duration) *http.Transport {
+	// Try to get existing transport with read lock first
 	p.mu.RLock()
-	if t, exists := p.transports[timeout]; exists {
-		p.mu.RUnlock()
+	t, exists := p.transports[timeout]
+	p.mu.RUnlock()
+	if exists {
 		return t
 	}
-	p.mu.RUnlock()
 
+	// If not found, acquire write lock and double-check
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if t, exists := p.transports[timeout]; exists {
+	
+	if t, exists = p.transports[timeout]; exists {
 		return t
 	}
 
-	// Create new transport with specified timeout
-	t := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
+	// Create new transport with optimized settings
+	t = &http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
 		DialContext: (&net.Dialer{
-			Timeout:   timeout,
-			KeepAlive: 30 * time.Second,
+			Timeout:    timeout,
+			KeepAlive:  30 * time.Second,
+			DualStack:  true, // Enable IPv4/IPv6 dual-stack
 		}).DialContext,
-		TLSHandshakeTimeout:   timeout,
-		ResponseHeaderTimeout: timeout,
+		TLSHandshakeTimeout:    timeout,
+		ResponseHeaderTimeout:  timeout,
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
-		MaxConnsPerHost:       100,
-		DisableCompression:    true,
+		ForceAttemptHTTP2:      true,
+		MaxConnsPerHost:        100,
+		DisableCompression:     true,
+		DisableKeepAlives:      false, // Explicitly enable keep-alives
+		MaxResponseHeaderBytes: 4096,  // Limit header size
 	}
 
 	p.transports[timeout] = t
@@ -74,15 +80,12 @@ func newBufferPool() *bufferPool {
 
 func (p *bufferPool) Get() []byte {
 	buf := p.pool.Get().(*bytes.Buffer)
-	b := buf.Bytes()
-	buf.Reset()
-	return b
+	defer buf.Reset()
+	return buf.Bytes()
 }
 
 func (p *bufferPool) Put(b []byte) {
-	buf := bytes.NewBuffer(b)
-	buf.Reset()
-	p.pool.Put(buf)
+	p.pool.Put(bytes.NewBuffer(nil)) // reuse empty buffer, discard input
 }
 
 var defaultBufferPool = newBufferPool()
@@ -105,33 +108,34 @@ func NewNodeProviderProxy(cfg NodeProviderConfig, timeout time.Duration) (*httpu
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		*r = *r.WithContext(ctx)
 
-		// Ensure context is canceled when request is done
+		// Ensure context is canceled when either timeout occurs or request is done
 		go func() {
-			<-r.Context().Done()
+			<-ctx.Done()
 			cancel()
 		}()
 	}
 
 	// Add custom error handler that returns the error for failover
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		// Set error in context for the proxy to handle
 		ctx := r.Context()
-		var statusCode int
-		if err == context.DeadlineExceeded {
+		statusCode := http.StatusInternalServerError
+		
+		switch {
+		case err == context.DeadlineExceeded:
 			statusCode = http.StatusGatewayTimeout
-		} else if _, ok := err.(*url.Error); ok {
+			// Clear any partial response by setting Content-Length to 0
+			w.Header().Set("Content-Length", "0")
+		case errors.As(err, new(*url.Error)):
 			statusCode = http.StatusBadGateway
-		} else {
-			statusCode = http.StatusInternalServerError
 		}
-		*r = *r.WithContext(context.WithValue(ctx, "error", err))
-		*r = *r.WithContext(context.WithValue(r.Context(), "statusCode", statusCode))
+		
+		*r = *r.WithContext(context.WithValue(
+			context.WithValue(ctx, "error", err),
+			"statusCode", statusCode,
+		))
 	}
 
-	// Use transport from pool
 	proxy.Transport = pool.getTransport(timeout)
-
-	// Add buffer pool for request/response handling
 	proxy.BufferPool = defaultBufferPool
 
 	return proxy, nil
