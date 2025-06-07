@@ -346,7 +346,7 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 	h.config.Logger.Info("provider tainted", 
 		"name", h.config.Name,
 		"reason", config.Reason,
-		"waitTime", h.taint.waitTime,
+		"waitTime", h.taint.waitTime.Seconds(),
 		"nextRemoval", time.Now().Add(h.taint.waitTime),
 		"path", h.config.Path)
 }
@@ -375,7 +375,7 @@ func (h *HealthChecker) RemoveTaint() {
 	
 	h.config.Logger.Info("provider taint removed", 
 		"name", h.config.Name,
-		"nextTaintWait", h.taint.waitTime,
+		"nextTaintWait", h.taint.waitTime.Seconds(),
 		"time", time.Now())
 }
 
