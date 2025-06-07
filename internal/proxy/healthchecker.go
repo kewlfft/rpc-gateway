@@ -344,11 +344,11 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 	})
 
 	h.config.Logger.Info("provider tainted", 
+		"path", h.config.Path,
 		"name", h.config.Name,
 		"reason", config.Reason,
 		"waitTime", h.taint.waitTime.Seconds(),
-		"nextRemoval", time.Now().Add(h.taint.waitTime),
-		"path", h.config.Path)
+		"nextRemoval", time.Now().Add(h.taint.waitTime))
 }
 
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
@@ -373,10 +373,10 @@ func (h *HealthChecker) RemoveTaint() {
 	h.taint.lastRemoval = time.Now()
 	h.taint.removalTimer = nil
 	
-	h.config.Logger.Info("provider taint removed", 
+	h.config.Logger.Info("taint removed", 
+		"path", h.config.Path,
 		"name", h.config.Name,
-		"nextTaintWait", h.taint.waitTime.Seconds(),
-		"time", time.Now())
+		"nextTaintWait", h.taint.waitTime.Seconds())
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {
