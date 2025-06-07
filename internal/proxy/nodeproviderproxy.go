@@ -7,7 +7,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/pkg/errors"
+	"github.com/kewlfft/rpc-gateway/internal/errors"
+	pkgerrors "github.com/pkg/errors"
 )
 
 // sharedTransport is a shared HTTP transport with connection pooling settings
@@ -35,7 +36,7 @@ var sharedTransport = &http.Transport{
 func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(config.Connection.HTTP.URL)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot parse url")
+		return nil, pkgerrors.Wrap(err, "cannot parse url")
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -49,7 +50,7 @@ func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, er
 
 	// Add custom error handler to properly handle response body errors
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		errors.WriteJSONRPCError(w, r, "Bad Gateway", http.StatusBadGateway)
 	}
 
 	// Use the shared transport with connection pooling

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"time"
 
+	"github.com/kewlfft/rpc-gateway/internal/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -99,6 +100,11 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 		statusCode == http.StatusServiceUnavailable
 }
 
+// writeErrorResponse writes an error response in the appropriate format based on the request
+func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, message string, status int) {
+	errors.WriteJSONRPCError(w, r, message, status)
+}
+
 // ServeHTTP handles incoming HTTP requests
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -106,8 +112,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Read and buffer request body once
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		p.logger.Error("failed to read request body", "error", err)
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
 	_ = r.Body.Close()
@@ -142,7 +147,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(rec.Code)
 			_, err := w.Write(rec.Body.Bytes())
 			if err != nil {
-				p.logger.Error("failed to write response", "error", err)
+				p.writeErrorResponse(w, r, "Failed to write response", http.StatusInternalServerError)
+				return
 			}
 			durationMs := time.Since(start).Milliseconds()
 			metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(float64(durationMs) / 1000)
@@ -176,8 +182,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	p.logger.Error("all providers failed")
-	http.Error(w, "all providers failed", http.StatusServiceUnavailable)
+	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/kewlfft/rpc-gateway/internal/errors"
 )
 
 func Gunzip(next http.Handler) http.Handler {
@@ -14,7 +16,6 @@ func Gunzip(next http.Handler) http.Handler {
 		//
 		if !strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
 			next.ServeHTTP(w, r)
-
 			return
 		}
 
@@ -22,11 +23,13 @@ func Gunzip(next http.Handler) http.Handler {
 
 		g, err := gzip.NewReader(r.Body)
 		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			errors.WriteJSONRPCError(w, r, "Failed to decompress request", http.StatusInternalServerError)
+			return
 		}
 
 		if _, err := io.Copy(body, g); err != nil { // nolint:gosec
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			errors.WriteJSONRPCError(w, r, "Failed to read decompressed data", http.StatusInternalServerError)
+			return
 		}
 
 		r.Header.Del("Content-Encoding")
