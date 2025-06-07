@@ -56,29 +56,25 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 			Name: "Server1",
 			Connection: struct {
 				HTTP struct {
-					URL         string `yaml:"url"`
-					Compression bool   `yaml:"compression"`
+					URL string `yaml:"url"`
 				} `yaml:"http"`
 			}{HTTP: struct {
-				URL         string `yaml:"url"`
-				Compression bool   `yaml:"compression"`
+				URL string `yaml:"url"`
 			}{URL: fakeRPC1Server.URL}},
 		},
 		{
 			Name: "Server2",
 			Connection: struct {
 				HTTP struct {
-					URL         string `yaml:"url"`
-					Compression bool   `yaml:"compression"`
+					URL string `yaml:"url"`
 				} `yaml:"http"`
 			}{HTTP: struct {
-				URL         string `yaml:"url"`
-				Compression bool   `yaml:"compression"`
+				URL string `yaml:"url"`
 			}{URL: fakeRPC2Server.URL}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
-	rpcGatewayConfig.DisableHealthChecks = true  // Disable health checks for this test
+	rpcGatewayConfig.DisableHealthChecks = true
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
@@ -321,12 +317,10 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 			Name: "Server1",
 			Connection: struct {
 				HTTP struct {
-					URL         string `yaml:"url"`
-					Compression bool   `yaml:"compression"`
+					URL string `yaml:"url"`
 				} `yaml:"http"`
 			}{HTTP: struct {
-				URL         string `yaml:"url"`
-				Compression bool   `yaml:"compression"`
+				URL string `yaml:"url"`
 			}{URL: fakeRPCServer.URL}},
 		},
 	}
@@ -340,42 +334,18 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 	assert.NotNil(t, httpFailoverProxy)
 	assert.NoError(t, err)
 
-	var buf bytes.Buffer
-	g := gzip.NewWriter(&buf)
-
-	_, err = g.Write([]byte(`{"body": "content"}`))
+	req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"body": "content"}`)))
 	assert.NoError(t, err)
-	assert.NoError(t, g.Close())
-
-	gzippedBody := buf.Bytes()
-
-	req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader(gzippedBody))
-	assert.NoError(t, err)
-
-	req.Header.Add("Content-Encoding", "gzip")
 
 	rr := httptest.NewRecorder()
 	handler := http.HandlerFunc(httpFailoverProxy.ServeHTTP)
 	handler.ServeHTTP(rr, req)
 
 	// Verify request handling
-	// The backend should receive the decompressed JSON body
-	assert.Equal(t, []byte(`{"body": "content"}`), receivedBody, "Received body should match the original decompressed content")
+	assert.Equal(t, []byte(`{"body": "content"}`), receivedBody, "Received body should match the original content")
 
 	// Verify response
 	require.Equal(t, http.StatusOK, rr.Code)
 	require.Equal(t, "text/plain; charset=utf-8", rr.Header().Get("Content-Type"))
-
-	// Read and decompress response body
-	var responseBody []byte
-	if rr.Header().Get("Content-Encoding") == "gzip" {
-		reader, err := gzip.NewReader(rr.Body)
-		require.NoError(t, err)
-		defer reader.Close()
-		responseBody, err = io.ReadAll(reader)
-		require.NoError(t, err)
-	} else {
-		responseBody = rr.Body.Bytes()
-	}
-	assert.Equal(t, []byte(`{"body": "content"}`), responseBody)
+	assert.Equal(t, []byte(`{"body": "content"}`), rr.Body.Bytes())
 }

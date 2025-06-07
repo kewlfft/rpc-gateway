@@ -17,7 +17,6 @@ proxies:
         connection:
           http:
             url: "https://eth.meowrpc.com"
-            # compression: true # Specify if the target supports request compression
       - name: "1rpc"
         connection:
           http:

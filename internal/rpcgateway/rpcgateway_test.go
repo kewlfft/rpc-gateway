@@ -30,13 +30,11 @@ func TestRandomizeProviders(t *testing.T) {
 						Name: "provider1",
 						Connection: struct {
 							HTTP struct {
-								URL         string `yaml:"url"`
-								Compression bool   `yaml:"compression"`
+								URL string `yaml:"url"`
 							} `yaml:"http"`
 						}{
 							HTTP: struct {
-								URL         string `yaml:"url"`
-								Compression bool   `yaml:"compression"`
+								URL string `yaml:"url"`
 							}{
 								URL: "http://provider1",
 							},
@@ -46,13 +44,11 @@ func TestRandomizeProviders(t *testing.T) {
 						Name: "provider2",
 						Connection: struct {
 							HTTP struct {
-								URL         string `yaml:"url"`
-								Compression bool   `yaml:"compression"`
+								URL string `yaml:"url"`
 							} `yaml:"http"`
 						}{
 							HTTP: struct {
-								URL         string `yaml:"url"`
-								Compression bool   `yaml:"compression"`
+								URL string `yaml:"url"`
 							}{
 								URL: "http://provider2",
 							},
@@ -62,13 +58,11 @@ func TestRandomizeProviders(t *testing.T) {
 						Name: "provider3",
 						Connection: struct {
 							HTTP struct {
-								URL         string `yaml:"url"`
-								Compression bool   `yaml:"compression"`
+								URL string `yaml:"url"`
 							} `yaml:"http"`
 						}{
 							HTTP: struct {
-								URL         string `yaml:"url"`
-								Compression bool   `yaml:"compression"`
+								URL string `yaml:"url"`
 							}{
 								URL: "http://provider3",
 							},

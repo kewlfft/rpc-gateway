@@ -16,8 +16,7 @@ type NodeProviderConfig struct {
 	Name       string `yaml:"name"`
 	Connection struct {
 		HTTP struct {
-			URL         string `yaml:"url"`
-			Compression bool   `yaml:"compression"`
+			URL string `yaml:"url"`
 		} `yaml:"http"`
 	} `yaml:"connection"`
 }
