@@ -2,23 +2,20 @@ package proxy
 
 import (
 	"net/http"
-	"net/http/httputil"
 	"strings"
 	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/middleware"
 )
 
-// NodeProvider represents a single RPC provider
 type NodeProvider struct {
 	config  NodeProviderConfig
-	proxy   *httputil.ReverseProxy
+	proxy   http.Handler
 	timeout time.Duration
 }
 
-// NewNodeProvider creates a new node provider
 func NewNodeProvider(config NodeProviderConfig, timeout time.Duration) (*NodeProvider, error) {
-	proxy, err := NewNodeProviderProxy(config, timeout)
+	proxy, err := newNodeProviderProxy(config.Connection.HTTP.URL, timeout)
 	if err != nil {
 		return nil, err
 	}
