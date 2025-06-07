@@ -8,10 +8,9 @@ randomizeProviders: true # randomize the order of providers at startup for all p
 
 proxies:
   - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
-    upstreamTimeout: "1s" # when is a request considered timed out
+    timeout: "1s" # timeout for both upstream requests and health checks
     healthChecks:
       interval: "10s" # how often to do healthchecks
-      timeout: "1s" # when should the timeout occur and considered unhealthy
       blockDiffThreshold: 2 # maximum allowed block difference between providers
     targets: # the order here determines the failover order
       - name: "meow"
@@ -33,10 +32,9 @@ proxies:
             url: "https://ethereum.publicnode.com"
 
   - path: "pol" # another proxy example
-    upstreamTimeout: "1s"
+    timeout: "0.1s"
     healthChecks:
       interval: "8s"
-      timeout: "1s"
       blockDiffThreshold: 2
     targets:
       - name: "polygon-rpc"
@@ -50,10 +48,9 @@ proxies:
 
   - path: "sol"
     chainType: "solana"
-    upstreamTimeout: "1s"
+    timeout: "1s"
     healthChecks:
       interval: "10s"
-      timeout: "1s"
       blockDiffThreshold: 2
     targets:
       - name: "solana_mainnet"

@@ -22,10 +22,9 @@ metrics:
 
 proxies:
   - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
-    upstreamTimeout: "1s" # when is a request considered timed out
+    timeout: "1s" # timeout for both upstream requests and health checks
     healthChecks:
       interval: "12s" # how often to do healthchecks
-      timeout: "1s" # when should the timeout occur and considered unhealthy
       blockDiffThreshold: 2 # how many blocks behind the max block number to taint
     targets:
       - name: "provider1"
@@ -44,10 +43,9 @@ proxies:
 - `metrics.port`: The port on which Prometheus metrics will be served
 - `proxies`: List of proxy configurations for different chains
   - `path`: The URL path for this proxy (e.g., "eth" for Ethereum)
-  - `upstreamTimeout`: How long to wait for upstream responses
+  - `timeout`: How long to wait for both upstream responses and health checks
   - `healthChecks`: Health check configuration
     - `interval`: How often to perform health checks
-    - `timeout`: How long to wait for health check responses
     - `blockDiffThreshold`: Maximum allowed block difference between providers
   - `targets`: List of RPC providers
     - `name`: Provider identifier
