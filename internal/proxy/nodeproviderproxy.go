@@ -1,42 +1,97 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/errors"
 	pkgerrors "github.com/pkg/errors"
 )
 
-// sharedTransport is a shared HTTP transport with connection pooling settings
-var sharedTransport = &http.Transport{
-	// Connection pooling settings
-	MaxIdleConns:        100,              // Maximum number of idle connections
-	MaxIdleConnsPerHost: 10,               // Maximum number of idle connections per host
-	IdleConnTimeout:     90 * time.Second, // How long to keep idle connections
-	// TCP settings
-	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext,
-	// TLS settings
-	TLSHandshakeTimeout: 10 * time.Second,
-	// Other optimizations
-	ForceAttemptHTTP2:     true,
-	MaxConnsPerHost:       100,
-	ResponseHeaderTimeout: 10 * time.Second,
-	ExpectContinueTimeout: 1 * time.Second,
-	// Disable compression as we handle it ourselves
-	DisableCompression: true,
+// transportPool manages a pool of transports with different timeouts
+type transportPool struct {
+	mu         sync.RWMutex
+	transports map[time.Duration]*http.Transport
 }
 
-func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, error) {
-	target, err := url.Parse(config.Connection.HTTP.URL)
+var pool = &transportPool{
+	transports: make(map[time.Duration]*http.Transport),
+}
+
+// getTransport returns a transport with the specified timeout, creating it if necessary
+func (p *transportPool) getTransport(timeout time.Duration) *http.Transport {
+	p.mu.RLock()
+	if t, exists := p.transports[timeout]; exists {
+		p.mu.RUnlock()
+		return t
+	}
+	p.mu.RUnlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if t, exists := p.transports[timeout]; exists {
+		return t
+	}
+
+	// Create new transport with specified timeout
+	t := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   timeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+		MaxConnsPerHost:       100,
+		DisableCompression:    true,
+	}
+
+	p.transports[timeout] = t
+	return t
+}
+
+// bufferPool implements httputil.BufferPool interface
+type bufferPool struct {
+	pool sync.Pool
+}
+
+func newBufferPool() *bufferPool {
+	return &bufferPool{
+		pool: sync.Pool{
+			New: func() interface{} { return new(bytes.Buffer) },
+		},
+	}
+}
+
+func (p *bufferPool) Get() []byte {
+	buf := p.pool.Get().(*bytes.Buffer)
+	b := buf.Bytes()
+	buf.Reset()
+	return b
+}
+
+func (p *bufferPool) Put(b []byte) {
+	buf := bytes.NewBuffer(b)
+	buf.Reset()
+	p.pool.Put(buf)
+}
+
+var defaultBufferPool = newBufferPool()
+
+func NewNodeProviderProxy(cfg NodeProviderConfig) (*httputil.ReverseProxy, error) {
+	target, err := url.Parse(cfg.Connection.HTTP.URL)
 	if err != nil {
-		return nil, pkgerrors.Wrap(err, "cannot parse url")
+		return nil, pkgerrors.Wrap(err, "cannot parse URL")
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -46,15 +101,36 @@ func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, er
 		r.Host = target.Host
 		r.URL.Scheme = target.Scheme
 		r.URL.Host = target.Host
+
+		// Add timeout to request context
+		ctx, cancel := context.WithTimeout(r.Context(), cfg.UpstreamTimeout)
+		*r = *r.WithContext(ctx)
+
+		// Cancel context when request is done
+		go func() {
+			<-ctx.Done()
+			cancel()
+		}()
 	}
 
-	// Add custom error handler to properly handle response body errors
+	// Add custom error handler with better error reporting
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		errors.WriteJSONRPCError(w, r, "Bad Gateway", http.StatusBadGateway)
+		status, message := http.StatusBadGateway, "Bad Gateway"
+		switch err {
+		case context.DeadlineExceeded:
+			status, message = http.StatusGatewayTimeout, "Gateway Timeout"
+		case context.Canceled:
+			status, message = http.StatusServiceUnavailable, "Service Unavailable"
+		}
+
+		errors.WriteJSONRPCError(w, r, message, status)
 	}
 
-	// Use the shared transport with connection pooling
-	proxy.Transport = sharedTransport
+	// Use transport from pool
+	proxy.Transport = pool.getTransport(cfg.UpstreamTimeout)
+
+	// Add buffer pool for request/response handling
+	proxy.BufferPool = defaultBufferPool
 
 	return proxy, nil
 }

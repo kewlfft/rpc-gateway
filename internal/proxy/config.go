@@ -23,6 +23,7 @@ type NodeProviderConfig struct {
 			Compression bool   `yaml:"compression"`
 		} `yaml:"http"`
 	} `yaml:"connection"`
+	UpstreamTimeout time.Duration `yaml:"upstreamTimeout"`
 }
 
 // Config defines the configuration for a proxy

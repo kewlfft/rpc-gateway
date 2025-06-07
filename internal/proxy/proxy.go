@@ -72,6 +72,7 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 
 	// Create providers for each target
 	for _, target := range config.Targets {
+		target.UpstreamTimeout = config.UpstreamTimeout
 		p, err := NewNodeProvider(target)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create provider for target %s: %w", target.Name, err)
