@@ -47,13 +47,13 @@ func (p *transportPool) getTransport(timeout time.Duration) *http.Transport {
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
 		DialContext: (&net.Dialer{
-			Timeout:    timeout,
+			Timeout:    timeout * 3 / 4,
 			KeepAlive:  30 * time.Second,
 			DualStack:  true, // Enable IPv4/IPv6 dual-stack
 		}).DialContext,
-		TLSHandshakeTimeout:    timeout,
-		ResponseHeaderTimeout:  timeout,
-		ExpectContinueTimeout: 1 * time.Second,
+		TLSHandshakeTimeout:    timeout * 3 / 4,
+		ResponseHeaderTimeout:  timeout * 3 / 4,
+		ExpectContinueTimeout: 0,
 		ForceAttemptHTTP2:      true,
 		MaxConnsPerHost:        100,
 		DisableCompression:     true,
@@ -80,12 +80,15 @@ func newBufferPool() *bufferPool {
 
 func (p *bufferPool) Get() []byte {
 	buf := p.pool.Get().(*bytes.Buffer)
-	defer buf.Reset()
-	return buf.Bytes()
+	buf.Reset()
+	return buf.Bytes()[:0] // empty but valid slice
 }
 
 func (p *bufferPool) Put(b []byte) {
-	p.pool.Put(bytes.NewBuffer(nil)) // reuse empty buffer, discard input
+	if cap(b) == 0 {
+		return
+	}
+	p.pool.Put(bytes.NewBuffer(b[:0]))
 }
 
 var defaultBufferPool = newBufferPool()
@@ -110,14 +113,13 @@ func NewNodeProviderProxy(cfg NodeProviderConfig, timeout time.Duration) (*httpu
 
 		// Ensure context is canceled when either timeout occurs or request is done
 		go func() {
+			defer cancel()
 			<-ctx.Done()
-			cancel()
 		}()
 	}
 
 	// Add custom error handler that returns the error for failover
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		ctx := r.Context()
 		statusCode := http.StatusInternalServerError
 		
 		switch {
@@ -130,7 +132,7 @@ func NewNodeProviderProxy(cfg NodeProviderConfig, timeout time.Duration) (*httpu
 		}
 		
 		*r = *r.WithContext(context.WithValue(
-			context.WithValue(ctx, "error", err),
+			context.WithValue(r.Context(), "error", err),
 			"statusCode", statusCode,
 		))
 	}
