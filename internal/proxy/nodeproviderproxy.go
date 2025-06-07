@@ -106,9 +106,9 @@ func NewNodeProviderProxy(cfg NodeProviderConfig) (*httputil.ReverseProxy, error
 		ctx, cancel := context.WithTimeout(r.Context(), cfg.UpstreamTimeout)
 		*r = *r.WithContext(ctx)
 
-		// Cancel context when request is done
+		// Ensure context is canceled when request is done
 		go func() {
-			<-ctx.Done()
+			<-r.Context().Done()
 			cancel()
 		}()
 	}
@@ -123,6 +123,8 @@ func NewNodeProviderProxy(cfg NodeProviderConfig) (*httputil.ReverseProxy, error
 			status, message = http.StatusServiceUnavailable, "Service Unavailable"
 		}
 
+		// Ensure we write a proper JSON-RPC error response
+		w.Header().Set("Content-Type", "application/json")
 		errors.WriteJSONRPCError(w, r, message, status)
 	}
 
