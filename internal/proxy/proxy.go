@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"time"
@@ -45,6 +46,13 @@ type Proxy struct {
 	timeout time.Duration
 	logger  *slog.Logger
 	targets []*NodeProvider
+}
+
+// RandomizeProviders randomizes the order of providers in the targets slice
+func (p *Proxy) RandomizeProviders() {
+	rand.Shuffle(len(p.targets), func(i, j int) {
+		p.targets[i], p.targets[j] = p.targets[j], p.targets[i]
+	})
 }
 
 // NewProxy creates a new proxy
@@ -175,4 +183,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // GetHealthCheckManager returns the health check manager for this proxy
 func (p *Proxy) GetHealthCheckManager() *HealthCheckManager {
 	return p.hcm
+}
+
+// GetTargets returns a copy of the targets slice
+func (p *Proxy) GetTargets() []*NodeProvider {
+	return p.targets
 }

@@ -156,6 +156,14 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		hcms[proxyConfig.Path] = p.GetHealthCheckManager()
 	}
 
+	// Randomize providers if enabled
+	if config.RandomizeProviders {
+		for _, p := range proxies {
+			p.RandomizeProviders()
+		}
+		slog.Info("providers randomized at startup")
+	}
+
 	r := chi.NewRouter()
 	// Only add request logger in DEBUG mode
 	if logLevel == slog.LevelDebug {
@@ -217,4 +225,15 @@ func NewRPCGatewayFromConfigFile(s string) (*RPCGateway, error) {
 	}())
 
 	return NewRPCGateway(config)
+}
+
+// SetRandomizeProviders sets the randomizeProviders flag and applies it to all proxies
+func (r *RPCGateway) SetRandomizeProviders(randomize bool) {
+	r.config.RandomizeProviders = randomize
+	if randomize {
+		for _, p := range r.proxies {
+			p.RandomizeProviders()
+		}
+		slog.Info("providers randomized from CLI flag")
+	}
 }

@@ -6,9 +6,10 @@ import (
 )
 
 type RPCGatewayConfig struct { //nolint:revive
-	Metrics metrics.Config `yaml:"metrics"`
-	Port    string        `yaml:"port"`
-	Proxies []ProxyConfig `yaml:"proxies"`
+	Metrics            metrics.Config `yaml:"metrics"`
+	Port              string        `yaml:"port"`
+	RandomizeProviders bool         `yaml:"randomizeProviders"` // If true, providers will be randomized at startup
+	Proxies           []ProxyConfig `yaml:"proxies"`
 }
 
 type ProxyConfig struct {

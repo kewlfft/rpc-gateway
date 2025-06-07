@@ -1,12 +1,36 @@
 package proxy
 
 import (
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"time"
 
 	"github.com/pkg/errors"
 )
+
+// sharedTransport is a shared HTTP transport with connection pooling settings
+var sharedTransport = &http.Transport{
+	// Connection pooling settings
+	MaxIdleConns:        100,              // Maximum number of idle connections
+	MaxIdleConnsPerHost: 10,               // Maximum number of idle connections per host
+	IdleConnTimeout:     90 * time.Second, // How long to keep idle connections
+	// TCP settings
+	DialContext: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	// TLS settings
+	TLSHandshakeTimeout: 10 * time.Second,
+	// Other optimizations
+	ForceAttemptHTTP2:     true,
+	MaxConnsPerHost:       100,
+	ResponseHeaderTimeout: 10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	// Disable compression as we handle it ourselves
+	DisableCompression: true,
+}
 
 func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(config.Connection.HTTP.URL)
@@ -28,10 +52,8 @@ func NewNodeProviderProxy(config NodeProviderConfig) (*httputil.ReverseProxy, er
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
 
-	// Prevent automatic decompression of gzipped responses
-	proxy.Transport = &http.Transport{
-		DisableCompression: true,
-	}
+	// Use the shared transport with connection pooling
+	proxy.Transport = sharedTransport
 
 	return proxy, nil
 }

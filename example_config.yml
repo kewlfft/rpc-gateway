@@ -4,6 +4,8 @@ metrics:
 
 port: 3000 # port for RPC gateway
 
+randomizeProviders: true # randomize the order of providers at startup for all proxies
+
 proxies:
   - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
     upstreamTimeout: "1s" # when is a request considered timed out
