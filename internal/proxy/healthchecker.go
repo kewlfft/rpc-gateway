@@ -59,7 +59,7 @@ type HealthCheckerConfig struct {
 	Interval time.Duration `yaml:"healthcheckInterval"`
 
 	// How long to wait for responses before failing
-	Timeout time.Duration `yaml:"healthcheckTimeout"`
+	Timeout time.Duration
 
 	// Maximum allowed block difference between providers
 	BlockDiffThreshold uint `yaml:"blockDiffThreshold"`

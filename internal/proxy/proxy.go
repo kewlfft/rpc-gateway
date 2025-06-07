@@ -66,14 +66,13 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 
 	proxy := &Proxy{
 		hcm:     hcm,
-		timeout: config.UpstreamTimeout,
+		timeout: config.Timeout,
 		logger:  config.Logger,
 	}
 
 	// Create providers for each target
 	for _, target := range config.Targets {
-		target.UpstreamTimeout = config.UpstreamTimeout
-		p, err := NewNodeProvider(target)
+		p, err := NewNodeProvider(target, config.Timeout)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create provider for target %s: %w", target.Name, err)
 		}

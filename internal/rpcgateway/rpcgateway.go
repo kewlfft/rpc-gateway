@@ -128,16 +128,16 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 
 	// Create health check managers and proxies for each proxy config
 	for _, proxyConfig := range config.Proxies {
-		upstreamTimeout, err := time.ParseDuration(proxyConfig.UpstreamTimeout)
+		timeout, err := time.ParseDuration(proxyConfig.Timeout)
 		if err != nil {
-			return nil, errors.Wrap(err, "invalid upstream timeout")
+			return nil, errors.Wrap(err, "invalid timeout")
 		}
 
 		// Create proxy configuration
 		proxyCfg := proxy.Config{
 			Path:            proxyConfig.Path,
 			ChainType:       proxyConfig.ChainType,
-			UpstreamTimeout: upstreamTimeout,
+			Timeout:         timeout,
 			HealthChecks:    proxyConfig.HealthChecks,
 			Targets:         proxyConfig.Targets,
 			Logger: slog.New(

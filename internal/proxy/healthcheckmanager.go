@@ -58,7 +58,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 			URL:              target.Connection.HTTP.URL,
 			Name:             target.Name,
 			Interval:         config.HealthChecks.Interval,
-			Timeout:          config.HealthChecks.Timeout,
+			Timeout:          config.Timeout,
 			Path:            config.Path,
 			ChainType:       config.ChainType,
 		})

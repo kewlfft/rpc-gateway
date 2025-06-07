@@ -88,7 +88,7 @@ func (p *bufferPool) Put(b []byte) {
 
 var defaultBufferPool = newBufferPool()
 
-func NewNodeProviderProxy(cfg NodeProviderConfig) (*httputil.ReverseProxy, error) {
+func NewNodeProviderProxy(cfg NodeProviderConfig, timeout time.Duration) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(cfg.Connection.HTTP.URL)
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "cannot parse URL")
@@ -103,7 +103,7 @@ func NewNodeProviderProxy(cfg NodeProviderConfig) (*httputil.ReverseProxy, error
 		r.URL.Host = target.Host
 
 		// Add timeout to request context
-		ctx, cancel := context.WithTimeout(r.Context(), cfg.UpstreamTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		*r = *r.WithContext(ctx)
 
 		// Ensure context is canceled when request is done
@@ -129,7 +129,7 @@ func NewNodeProviderProxy(cfg NodeProviderConfig) (*httputil.ReverseProxy, error
 	}
 
 	// Use transport from pool
-	proxy.Transport = pool.getTransport(cfg.UpstreamTimeout)
+	proxy.Transport = pool.getTransport(timeout)
 
 	// Add buffer pool for request/response handling
 	proxy.BufferPool = defaultBufferPool

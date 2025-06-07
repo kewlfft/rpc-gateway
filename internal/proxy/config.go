@@ -8,9 +8,6 @@ import (
 // HealthCheckConfig defines the health check parameters
 type HealthCheckConfig struct {
 	Interval           time.Duration `yaml:"interval"`
-	Timeout           time.Duration `yaml:"timeout"`
-	FailureThreshold  uint          `yaml:"failureThreshold"`
-	SuccessThreshold  uint          `yaml:"successThreshold"`
 	BlockDiffThreshold uint64       `yaml:"blockDiffThreshold"`
 }
 
@@ -23,14 +20,13 @@ type NodeProviderConfig struct {
 			Compression bool   `yaml:"compression"`
 		} `yaml:"http"`
 	} `yaml:"connection"`
-	UpstreamTimeout time.Duration `yaml:"upstreamTimeout"`
 }
 
 // Config defines the configuration for a proxy
 type Config struct {
 	Path            string            `yaml:"path"`
 	ChainType       string            `yaml:"chainType,omitempty"` // Default chain type for all targets
-	UpstreamTimeout time.Duration     `yaml:"upstreamTimeout"`
+	Timeout         time.Duration     `yaml:"timeout"`
 	HealthChecks    HealthCheckConfig `yaml:"healthChecks"`
 	Targets         []NodeProviderConfig `yaml:"targets"`
 	Logger          *slog.Logger

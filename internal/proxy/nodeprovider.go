@@ -4,40 +4,43 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/middleware"
 )
 
+// NodeProvider represents a single RPC provider
 type NodeProvider struct {
-	Config NodeProviderConfig
-	Proxy  *httputil.ReverseProxy
+	config  NodeProviderConfig
+	proxy   *httputil.ReverseProxy
+	timeout time.Duration
 }
 
-func NewNodeProvider(config NodeProviderConfig) (*NodeProvider, error) {
-	proxy, err := NewNodeProviderProxy(config)
+// NewNodeProvider creates a new node provider
+func NewNodeProvider(config NodeProviderConfig, timeout time.Duration) (*NodeProvider, error) {
+	proxy, err := NewNodeProviderProxy(config, timeout)
 	if err != nil {
 		return nil, err
 	}
 
-	nodeProvider := &NodeProvider{
-		Config: config,
-		Proxy:  proxy,
-	}
-
-	return nodeProvider, nil
+	return &NodeProvider{
+		config:  config,
+		proxy:   proxy,
+		timeout: timeout,
+	}, nil
 }
 
 func (n *NodeProvider) Name() string {
-	return n.Config.Name
+	return n.config.Name
 }
 
 func (n *NodeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	gzip := strings.Contains(r.Header.Get("Content-Encoding"), "gzip")
 
-	if !n.Config.Connection.HTTP.Compression && gzip {
-		middleware.Gunzip(n.Proxy).ServeHTTP(w, r)
+	if !n.config.Connection.HTTP.Compression && gzip {
+		middleware.Gunzip(n.proxy).ServeHTTP(w, r)
 		return
 	}
 
-	n.Proxy.ServeHTTP(w, r)
+	n.proxy.ServeHTTP(w, r)
 }
