@@ -157,7 +157,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"provider", name,
 				"status", rec.Code,
 				"method", r.Method,
-				"path", r.URL.Path,
+				"config_path", p.hcm.path,
 				"duration_ms", durationMs,
 			)
 			return
@@ -177,7 +177,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"provider", name,
 			"status", rec.Code,
 			"method", r.Method,
-			"path", r.URL.Path,
+			"config_path", p.hcm.path,
 			"duration_ms", durationMs,
 		)
 	}
