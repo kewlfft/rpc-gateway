@@ -66,6 +66,9 @@ type HealthCheckerConfig struct {
 
 	// Path information
 	Path string
+
+	// Chain type (evm or solana)
+	ChainType string `yaml:"chainType,omitempty"`
 }
 
 // BlockNumberUpdateCallback is called when a health checker successfully updates its block number
@@ -76,8 +79,7 @@ type HealthChecker struct {
 	client              *rpc.Client
 	httpClient          *http.Client
 	blockNumber        uint64
-	gasLeft            uint64
-	mu                 sync.RWMutex // Only for blockNumber, gasLeft, and taint state
+	mu                 sync.RWMutex // Only for blockNumber and taint state
 	timer              *time.Timer
 	postponeCh         chan struct{}
 	stopCh            chan struct{}
@@ -95,6 +97,11 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 	client, err := rpc.Dial(config.URL)
 	if err != nil {
 		return nil, err
+	}
+
+	// Set default chain type if not specified
+	if config.ChainType == "" {
+		config.ChainType = "evm"
 	}
 
 	client.SetHeader("User-Agent", userAgent)
@@ -115,7 +122,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 	healthchecker.config.Logger.Debug("Health checker created", 
 		"provider", config.Name, 
 		"url", config.URL,
-		"path", config.Path)
+		"path", config.Path,
+		"chainType", config.ChainType)
 
 	return healthchecker, nil
 }
@@ -125,24 +133,33 @@ func (h *HealthChecker) Name() string {
 }
 
 func (h *HealthChecker) checkBlockNumber(c context.Context) (uint64, error) {
-	// First we check the block number reported by the node. This is later
-	// used to evaluate a single RPC node against others
-	var blockNumber hexutil.Uint64
+	var (
+		blockNumber uint64
+		err         error
+	)
 
-	err := h.client.CallContext(c, &blockNumber, "eth_blockNumber")
+	if h.config.ChainType == "solana" {
+		err = h.client.CallContext(c, &blockNumber, "getSlot")
+	} else {
+		var ethBlock hexutil.Uint64
+		err = h.client.CallContext(c, &ethBlock, "eth_blockNumber")
+		blockNumber = uint64(ethBlock)
+	}
+
 	if err != nil {
-		h.config.Logger.Error("could not fetch block number", 
+		h.config.Logger.Error("could not fetch block number",
 			"error", err,
 			"provider", h.config.Name,
 			"path", h.config.Path)
 		return 0, err
 	}
-	h.config.Logger.Debug("fetch block number completed", 
-		"nodeprovider", h.config.Name, 
-		"blockNumber", uint64(blockNumber), 
+
+	h.config.Logger.Debug("fetch block number completed",
+		"nodeprovider", h.config.Name,
+		"blockNumber", blockNumber,
 		"path", h.config.Path)
 
-	return uint64(blockNumber), nil
+	return blockNumber, nil
 }
 
 // checkGasLeft performs an `eth_call` with a GasLeft.sol contract call. We also
@@ -209,10 +226,15 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 }
 
 func (h *HealthChecker) checkAndSetGasLeftHealth() {
+	// Skip gas left check for non-EVM chains
+	if h.config.ChainType != "evm" {
+		return
+	}
+
 	c, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
 	defer cancel()
 
-	gasLeft, err := h.checkGasLeft(c)
+	_, err := h.checkGasLeft(c)
 	if err != nil {
 		h.config.Logger.Info("provider tainted due to gas left check failure",
 			"provider", h.config.Name,
@@ -221,9 +243,6 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 			h.TaintHealthCheck()
 			return
 	}
-	h.mu.Lock()
-	h.gasLeft = gasLeft
-	h.mu.Unlock()
 }
 
 // PostponeCheck resets the health check timer when a request is made
@@ -384,11 +403,4 @@ func (h *HealthChecker) BlockNumber() uint64 {
 	defer h.mu.RUnlock()
 
 	return h.blockNumber
-}
-
-func (h *HealthChecker) GasLeft() uint64 {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	return h.gasLeft
 }

@@ -35,7 +35,7 @@ proxies:
   - path: "pol" # another proxy example
     upstreamTimeout: "1s"
     healthChecks:
-      interval: "5s"
+      interval: "8s"
       timeout: "1s"
       blockDiffThreshold: 2
     targets:
@@ -47,3 +47,20 @@ proxies:
         connection:
           http:
             url: "https://polygon-pokt.nodies.app"
+
+  - path: "sol"
+    chainType: "solana"
+    upstreamTimeout: "1s"
+    healthChecks:
+      interval: "10s"
+      timeout: "1s"
+      blockDiffThreshold: 2
+    targets:
+      - name: "solana_mainnet"
+        connection:
+          http:
+            url: "https://api.mainnet-beta.solana.com"
+      - name: "publicnode"
+        connection:
+          http:
+            url: "https://solana-rpc.publicnode.com"

@@ -32,13 +32,6 @@ var (
 		},
 		[]string{"name", "proxy"},
 	)
-	metricRPCProviderGasLeft = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "rpc_provider_gas_left",
-			Help: "Gas left in the RPC provider",
-		},
-		[]string{"name", "proxy"},
-	)
 )
 
 // HealthCheckManager manages health checks for multiple node providers
@@ -55,6 +48,11 @@ type HealthCheckManager struct {
 func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 	checkers := make([]*HealthChecker, 0, len(config.Targets))
 	for _, target := range config.Targets {
+		config.Logger.Debug("Creating health checker",
+			"provider", target.Name,
+			"chainType", config.ChainType,
+			"path", config.Path)
+
 		checker, err := NewHealthChecker(HealthCheckerConfig{
 			Logger:           config.Logger,
 			URL:              target.Connection.HTTP.URL,
@@ -62,6 +60,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 			Interval:         config.HealthChecks.Interval,
 			Timeout:          config.HealthChecks.Timeout,
 			Path:            config.Path,
+			ChainType:       config.ChainType,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create health checker for target %s: %w", target.Name, err)
@@ -139,6 +138,5 @@ func (h *HealthCheckManager) reportStatusMetrics() {
 		metricRPCProviderInfo.WithLabelValues(fmt.Sprintf("%d", i), name, h.path).Set(1)
 		metricRPCProviderStatus.WithLabelValues(name, status, h.path).Set(1)
 		metricRPCProviderBlockNumber.WithLabelValues(name, h.path).Set(float64(checker.BlockNumber()))
-		metricRPCProviderGasLeft.WithLabelValues(name, h.path).Set(float64(checker.GasLeft()))
 	}
 }

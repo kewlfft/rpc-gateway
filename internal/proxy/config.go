@@ -28,6 +28,7 @@ type NodeProviderConfig struct {
 // Config defines the configuration for a proxy
 type Config struct {
 	Path            string            `yaml:"path"`
+	ChainType       string            `yaml:"chainType,omitempty"` // Default chain type for all targets
 	UpstreamTimeout time.Duration     `yaml:"upstreamTimeout"`
 	HealthChecks    HealthCheckConfig `yaml:"healthChecks"`
 	Targets         []NodeProviderConfig `yaml:"targets"`

@@ -136,6 +136,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		// Create proxy configuration
 		proxyCfg := proxy.Config{
 			Path:            proxyConfig.Path,
+			ChainType:       proxyConfig.ChainType,
 			UpstreamTimeout: upstreamTimeout,
 			HealthChecks:    proxyConfig.HealthChecks,
 			Targets:         proxyConfig.Targets,
