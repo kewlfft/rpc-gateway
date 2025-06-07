@@ -97,7 +97,7 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 		statusCode == http.StatusRequestEntityTooLarge ||
 		statusCode == http.StatusForbidden ||
 		statusCode == http.StatusUnauthorized ||
-		statusCode == http.StatusServiceUnavailable
+		statusCode == http.StatusPaymentRequired
 }
 
 // writeErrorResponse writes an error response in the appropriate format based on the request
