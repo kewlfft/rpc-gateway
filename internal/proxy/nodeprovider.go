@@ -8,7 +8,6 @@ import (
 type NodeProvider struct {
 	config  NodeProviderConfig
 	proxy   http.Handler
-	timeout time.Duration
 }
 
 func NewNodeProvider(config NodeProviderConfig, timeout time.Duration) (*NodeProvider, error) {
@@ -20,7 +19,6 @@ func NewNodeProvider(config NodeProviderConfig, timeout time.Duration) (*NodePro
 	return &NodeProvider{
 		config:  config,
 		proxy:   proxy,
-		timeout: timeout,
 	}, nil
 }
 
