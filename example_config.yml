@@ -32,7 +32,7 @@ proxies:
             url: "https://ethereum.publicnode.com"
 
   - path: "pol" # another proxy example
-    timeout: "0.051s"
+    timeout: "1s"
     healthChecks:
       interval: "8s"
       blockDiffThreshold: 2
