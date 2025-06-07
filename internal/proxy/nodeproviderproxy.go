@@ -10,8 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kewlfft/rpc-gateway/internal/errors"
-	pkgerrors "github.com/pkg/errors"
+	"github.com/pkg/errors"
 )
 
 // transportPool manages a pool of transports with different timeouts
@@ -91,7 +90,7 @@ var defaultBufferPool = newBufferPool()
 func NewNodeProviderProxy(cfg NodeProviderConfig, timeout time.Duration) (*httputil.ReverseProxy, error) {
 	target, err := url.Parse(cfg.Connection.HTTP.URL)
 	if err != nil {
-		return nil, pkgerrors.Wrap(err, "cannot parse URL")
+		return nil, errors.Wrap(err, "cannot parse URL")
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -113,19 +112,22 @@ func NewNodeProviderProxy(cfg NodeProviderConfig, timeout time.Duration) (*httpu
 		}()
 	}
 
-	// Add custom error handler with better error reporting
+	// Add custom error handler that returns the error for failover
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		status, message := http.StatusBadGateway, "Bad Gateway"
-		switch err {
-		case context.DeadlineExceeded:
-			status, message = http.StatusGatewayTimeout, "Gateway Timeout"
-		case context.Canceled:
-			status, message = http.StatusServiceUnavailable, "Service Unavailable"
+		// Check if it's a timeout error
+		if err == context.DeadlineExceeded {
+			http.Error(w, err.Error(), http.StatusGatewayTimeout)
+			return
 		}
 
-		// Ensure we write a proper JSON-RPC error response
-		w.Header().Set("Content-Type", "application/json")
-		errors.WriteJSONRPCError(w, r, message, status)
+		// Check if it's a connection error
+		if _, ok := err.(*url.Error); ok {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		// Default to internal server error for other cases
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
 	// Use transport from pool

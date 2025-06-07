@@ -92,13 +92,8 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 
 // HasNodeProviderFailed checks if a provider has failed based on status code
 func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
-	return statusCode >= http.StatusInternalServerError || 
-		statusCode == http.StatusTooManyRequests ||
-		statusCode == http.StatusRequestEntityTooLarge ||
-		statusCode == http.StatusForbidden ||
-		statusCode == http.StatusUnauthorized ||
-		statusCode == http.StatusPaymentRequired ||
-		statusCode == http.StatusGatewayTimeout
+	// Consider any non-2xx status code as a failure
+	return statusCode < 200 || statusCode >= 300
 }
 
 // writeErrorResponse writes an error response in the appropriate format based on the request
