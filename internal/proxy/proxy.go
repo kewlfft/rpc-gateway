@@ -101,6 +101,27 @@ func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, messa
 	errors.WriteJSONRPCError(w, r, message, status)
 }
 
+// handleProviderFailure handles provider failure by recording metrics, tainting the provider, and logging
+func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.Time, statusCode int, err error) {
+	durationMs := time.Since(start).Milliseconds()
+	metricRequestDuration.WithLabelValues(r.Method, name, "error").Observe(float64(durationMs) / 1000)
+	metricRequestErrors.WithLabelValues(r.Method, name, "error").Inc()
+	metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
+
+	if hc := p.hcm.GetHealthChecker(name); hc != nil {
+		hc.TaintHTTP()
+	}
+
+	p.logger.Debug("provider failed, trying next",
+		"provider", name,
+		"status", statusCode,
+		"error", err,
+		"method", r.Method,
+		"config_path", p.hcm.path,
+		"duration_ms", durationMs,
+	)
+}
+
 // ServeHTTP handles incoming HTTP requests
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -133,6 +154,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		target.ServeHTTP(rec, req)
 
+		// Check for errors in context
+		if err, ok := req.Context().Value("error").(error); ok {
+			statusCode, _ := req.Context().Value("statusCode").(int)
+			p.handleProviderFailure(name, r, start, statusCode, err)
+			continue
+		}
+
 		if !p.HasNodeProviderFailed(rec.Code) {
 			// Copy headers
 			for k, values := range rec.Header() {
@@ -159,23 +187,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Provider failed, record and taint
-		durationMs := time.Since(start).Milliseconds()
-		metricRequestDuration.WithLabelValues(r.Method, name, "error").Observe(float64(durationMs) / 1000)
-		metricRequestErrors.WithLabelValues(r.Method, name, "error").Inc()
-		metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
-
-		if hc := p.hcm.GetHealthChecker(name); hc != nil {
-			hc.TaintHTTP()
-		}
-
-		p.logger.Debug("provider failed, trying next",
-			"provider", name,
-			"status", rec.Code,
-			"method", r.Method,
-			"config_path", p.hcm.path,
-			"duration_ms", durationMs,
-		)
+		// Provider failed with non-2xx status code
+		p.handleProviderFailure(name, r, start, rec.Code, nil)
 	}
 
 	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)

@@ -114,20 +114,18 @@ func NewNodeProviderProxy(cfg NodeProviderConfig, timeout time.Duration) (*httpu
 
 	// Add custom error handler that returns the error for failover
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		// Check if it's a timeout error
+		// Set error in context for the proxy to handle
+		ctx := r.Context()
+		var statusCode int
 		if err == context.DeadlineExceeded {
-			http.Error(w, err.Error(), http.StatusGatewayTimeout)
-			return
+			statusCode = http.StatusGatewayTimeout
+		} else if _, ok := err.(*url.Error); ok {
+			statusCode = http.StatusBadGateway
+		} else {
+			statusCode = http.StatusInternalServerError
 		}
-
-		// Check if it's a connection error
-		if _, ok := err.(*url.Error); ok {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-
-		// Default to internal server error for other cases
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		*r = *r.WithContext(context.WithValue(ctx, "error", err))
+		*r = *r.WithContext(context.WithValue(r.Context(), "statusCode", statusCode))
 	}
 
 	// Use transport from pool
