@@ -31,7 +31,7 @@ proxies:
             url: "https://ethereum.publicnode.com"
 
   - path: "pol" # another proxy example
-    timeout: "0.1s"
+    timeout: "0.5s"
     healthChecks:
       interval: "8s"
       blockDiffThreshold: 2
@@ -45,7 +45,7 @@ proxies:
           http:
             url: "https://polygon-pokt.nodies.app"
 
-  - path: "sol"
+  - path: "sol" # changed from "solwrite" to match client request
     chainType: "solana"
     timeout: "1s"
     healthChecks:
@@ -56,7 +56,11 @@ proxies:
         connection:
           http:
             url: "https://api.mainnet-beta.solana.com"
+          websocket:
+            url: "wss://api.mainnet-beta.solana.com"
       - name: "publicnode"
         connection:
           http:
             url: "https://solana-rpc.publicnode.com"
+          websocket:
+            url: "wss://solana-rpc.publicnode.com"

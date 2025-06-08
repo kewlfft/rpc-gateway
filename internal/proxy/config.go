@@ -18,6 +18,9 @@ type NodeProviderConfig struct {
 		HTTP struct {
 			URL string `yaml:"url"`
 		} `yaml:"http"`
+		WebSocket struct {
+			URL string `yaml:"url"`
+		} `yaml:"websocket"`
 	} `yaml:"connection"`
 }
 
