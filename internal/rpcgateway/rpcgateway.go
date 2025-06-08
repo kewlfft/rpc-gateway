@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
+	"github.com/gorilla/websocket"
 )
 
 type RPCGateway struct {
@@ -178,11 +179,33 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 
 	// Handle each proxy path
 	for path, p := range proxies {
-		r.Handle(fmt.Sprintf("/%s", path), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r.URL.Path = "/"
-			p.ServeHTTP(w, r)
-		}))
+		// Define a reusable handler constructor
+		handler := func(p http.Handler, stripPath bool) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				logger := slog.Default()
+				logger.Debug("handling request",
+					"path", r.URL.Path,
+					"method", r.Method,
+					"upgrade", r.Header.Get("Upgrade"),
+					"connection", r.Header.Get("Connection"))
+
+				if websocket.IsWebSocketUpgrade(r) {
+					logger.Debug("websocket upgrade request detected")
+					p.ServeHTTP(w, r)
+					return
+				}
+
+				if stripPath {
+					r.URL.Path = "/"
+				}
+				p.ServeHTTP(w, r)
+			}
+		}
+
+		r.Handle(fmt.Sprintf("/%s", path), handler(p, true))
+		r.Handle(fmt.Sprintf("/%s/", path), handler(p, true))
 	}
+
 
 	return &RPCGateway{
 		config:  config,

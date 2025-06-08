@@ -15,6 +15,7 @@ import (
 	"github.com/kewlfft/rpc-gateway/internal/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/gorilla/websocket"
 )
 
 var (
@@ -73,7 +74,7 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 
 	// Create providers for each target
 	for _, target := range config.Targets {
-		p, err := NewNodeProvider(target, config.Timeout)
+		p, err := NewNodeProvider(target, config.Timeout, config.Logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create provider for target %s: %w", target.Name, err)
 		}
@@ -126,13 +127,19 @@ func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.T
 // ServeHTTP handles incoming HTTP requests
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	isWebSocket := websocket.IsWebSocketUpgrade(r)
 
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
-		return
+	// Pre-read body for HTTP requests
+	var bodyBytes []byte
+	if !isWebSocket {
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if err != nil {
+			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
 	}
-	_ = r.Body.Close()
 
 	for _, target := range p.targets {
 		name := target.Name()
@@ -144,15 +151,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			hc.PostponeCheck()
 		}
 
+		// WebSocket: just forward
+		if isWebSocket {
+			target.ServeHTTP(w, r)
+			return
+		}
+
+		// Clone request with original body for HTTP
 		req := r.Clone(r.Context())
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 		rec := httptest.NewRecorder()
 		target.ServeHTTP(rec, req)
 
-		ctx := req.Context()
-		if err, ok := ctx.Value("error").(error); ok {
-			statusCode, _ := ctx.Value("statusCode").(int)
+		// Handle simulated errors via context
+		if err, ok := req.Context().Value("error").(error); ok {
+			statusCode, _ := req.Context().Value("statusCode").(int)
 			p.handleProviderFailure(name, r, start, statusCode, err)
 			continue
 		}
@@ -162,18 +176,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		for k, values := range rec.Header() {
-			for _, v := range values {
+		// Write headers and body
+		for k, vv := range rec.Header() {
+			for _, v := range vv {
 				w.Header().Add(k, v)
 			}
 		}
 
 		respBody := rec.Body.Bytes()
-		if len(respBody) == 0 {
-			w.WriteHeader(rec.Code)
-		} else {
-			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
-			w.WriteHeader(rec.Code)
+		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+		w.WriteHeader(rec.Code)
+		if len(respBody) > 0 {
 			if _, err := w.Write(respBody); err != nil {
 				p.writeErrorResponse(w, r, "Failed to write response", http.StatusInternalServerError)
 				return
