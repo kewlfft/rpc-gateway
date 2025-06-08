@@ -45,7 +45,7 @@ proxies:
           http:
             url: "https://polygon-pokt.nodies.app"
 
-  - path: "sol" # changed from "solwrite" to match client request
+  - path: "sol"
     chainType: "solana"
     timeout: "1s"
     healthChecks:
