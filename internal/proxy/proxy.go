@@ -119,7 +119,7 @@ func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.T
 		"status", statusCode,
 		"error", err,
 		"method", r.Method,
-		"config_path", p.hcm.path,
+		"path", p.hcm.path,
 		"duration_ms", durationMs,
 	)
 }
@@ -201,7 +201,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"provider", name,
 			"status", rec.Code,
 			"method", r.Method,
-			"config_path", p.hcm.path,
+			"path", p.hcm.path,
 			"duration_ms", durationMs,
 		)
 		return
