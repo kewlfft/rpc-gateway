@@ -10,9 +10,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	bufferSize      = 1024
+	handshakeTimeout = 45 * time.Second
+	pingInterval     = 15 * time.Second
+	pingTimeout      = 2 * time.Second
+)
+
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	ReadBufferSize:  bufferSize,
+	WriteBufferSize: bufferSize,
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
@@ -38,9 +45,9 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer clientConn.Close()
 
 	dialer := websocket.Dialer{
-		HandshakeTimeout:  45 * time.Second,
-		ReadBufferSize:    1024,
-		WriteBufferSize:   1024,
+		HandshakeTimeout:  handshakeTimeout,
+		ReadBufferSize:    bufferSize,
+		WriteBufferSize:   bufferSize,
 		EnableCompression: true,
 	}
 
@@ -89,14 +96,14 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go pipe(targetConn, clientConn, "target->client")
 
 	// Periodic ping to keep the connection alive
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
-				deadline := time.Now().Add(2 * time.Second)
+				deadline := time.Now().Add(pingTimeout)
 				if err := clientConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
 					errCh <- err
 					return
