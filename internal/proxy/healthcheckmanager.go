@@ -46,35 +46,62 @@ type HealthCheckManager struct {
 
 // NewHealthCheckManager creates a new health check manager
 func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
-	checkers := make([]*HealthChecker, 0, len(config.Targets))
+	checkers := make([]*HealthChecker, 0, len(config.Targets)*2) // *2 for both HTTP and WebSocket
+	
+	// Create the manager first so we can use it in the callbacks
+	hcm := &HealthCheckManager{
+		config:   config.HealthChecks,
+		targets:  config.Targets,
+		logger:   config.Logger,
+		path:     config.Path,
+	}
+
 	for _, target := range config.Targets {
 		config.Logger.Debug("Creating health checker",
 			"provider", target.Name,
 			"chainType", config.ChainType,
 			"path", config.Path)
 
-		checker, err := NewHealthChecker(HealthCheckerConfig{
-			Logger:           config.Logger,
-			URL:              target.Connection.HTTP.URL,
-			Name:             target.Name,
-			Interval:         config.HealthChecks.Interval,
-			Timeout:          config.Timeout,
-			Path:            config.Path,
-			ChainType:       config.ChainType,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create health checker for target %s: %w", target.Name, err)
+		// Create health checkers for both HTTP and WebSocket if configured
+		connections := []struct {
+			url  string
+			connType string
+		}{
+			{target.Connection.HTTP.URL, "http"},
+			{target.Connection.WebSocket.URL, "websocket"},
 		}
-		checkers = append(checkers, checker)
+
+		for _, conn := range connections {
+			if conn.url == "" {
+				continue
+			}
+
+			checker, err := NewHealthChecker(HealthCheckerConfig{
+				Logger:           config.Logger,
+				URL:              conn.url,
+				Name:             target.Name,
+				Interval:         config.HealthChecks.Interval,
+				Timeout:          config.Timeout,
+				Path:            config.Path,
+				ChainType:       config.ChainType,
+				ConnectionType:  conn.connType,
+				BlockDiffThreshold: uint(config.HealthChecks.BlockDiffThreshold),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to create %s health checker for target %s: %w", conn.connType, target.Name, err)
+			}
+
+			// Set up block number update callback
+			checker.SetBlockNumberUpdateCallback(func(blockNumber uint64) {
+				hcm.checkBlockLagAndTaint(target.Name, blockNumber)
+			})
+
+			checkers = append(checkers, checker)
+		}
 	}
 
-	return &HealthCheckManager{
-		config:   config.HealthChecks,
-		targets:  config.Targets,
-		logger:   config.Logger,
-		checkers: checkers,
-		path:     config.Path,
-	}, nil
+	hcm.checkers = checkers
+	return hcm, nil
 }
 
 // Start starts the health check manager
@@ -97,26 +124,26 @@ func (h *HealthCheckManager) Stop(ctx context.Context) error {
 	return nil
 }
 
-// IsHealthy checks if a provider is healthy
-func (h *HealthCheckManager) IsHealthy(name string) bool {
+// IsHealthy checks if a provider is healthy for a specific connection type
+func (h *HealthCheckManager) IsHealthy(name string, connectionType string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	for _, checker := range h.checkers {
-		if checker.Name() == name {
+		if checker.Name() == name && checker.config.ConnectionType == connectionType {
 			return checker.IsHealthy()
 		}
 	}
 	return false
 }
 
-// GetHealthChecker returns the health checker for a provider
-func (h *HealthCheckManager) GetHealthChecker(name string) *HealthChecker {
+// GetHealthChecker returns the health checker for a provider and connection type
+func (h *HealthCheckManager) GetHealthChecker(name string, connectionType string) *HealthChecker {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	for _, checker := range h.checkers {
-		if checker.Name() == name {
+		if checker.Name() == name && checker.config.ConnectionType == connectionType {
 			return checker
 		}
 	}
@@ -138,5 +165,35 @@ func (h *HealthCheckManager) reportStatusMetrics() {
 		metricRPCProviderInfo.WithLabelValues(fmt.Sprintf("%d", i), name, h.path).Set(1)
 		metricRPCProviderStatus.WithLabelValues(name, status, h.path).Set(1)
 		metricRPCProviderBlockNumber.WithLabelValues(name, h.path).Set(float64(checker.BlockNumber()))
+	}
+}
+
+// checkBlockLagAndTaint checks if a provider's block number is lagging behind others
+func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, updatedBlockNumber uint64) {
+	var maxBlock uint64
+
+	// Find the maximum block number across all providers
+	for _, checker := range h.checkers {
+		if bn := checker.BlockNumber(); bn > maxBlock {
+			maxBlock = bn
+		}
+	}
+
+	// If the updated provider is too far behind, taint it
+	if maxBlock > updatedBlockNumber && (maxBlock - updatedBlockNumber) > uint64(h.config.BlockDiffThreshold) {
+		h.logger.Info("provider block number too far behind",
+			"provider", updatedRPCName,
+			"blockNumber", updatedBlockNumber,
+			"maxBlock", maxBlock,
+			"threshold", h.config.BlockDiffThreshold,
+			"path", h.path)
+
+		// Find and taint the specific provider
+		for _, checker := range h.checkers {
+			if checker.Name() == updatedRPCName {
+				checker.TaintHealthCheck()
+				break
+			}
+		}
 	}
 }

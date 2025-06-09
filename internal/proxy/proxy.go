@@ -110,7 +110,12 @@ func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.T
 	metricRequestErrors.WithLabelValues(r.Method, name, "error").Inc()
 	metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
 
-	if hc := p.hcm.GetHealthChecker(name); hc != nil {
+	connectionType := "http"
+	if websocket.IsWebSocketUpgrade(r) {
+		connectionType = "websocket"
+	}
+
+	if hc := p.hcm.GetHealthChecker(name, connectionType); hc != nil {
 		hc.TaintHTTP()
 	}
 
@@ -121,6 +126,7 @@ func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.T
 		"method", r.Method,
 		"path", p.hcm.path,
 		"duration_ms", durationMs,
+		"connectionType", connectionType,
 	)
 }
 
@@ -143,11 +149,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for _, target := range p.targets {
 		name := target.Name()
-		if !p.hcm.IsHealthy(name) {
+		connectionType := "http"
+		if isWebSocket {
+			connectionType = "websocket"
+		}
+
+		if !p.hcm.IsHealthy(name, connectionType) {
 			continue
 		}
 
-		if hc := p.hcm.GetHealthChecker(name); hc != nil {
+		if hc := p.hcm.GetHealthChecker(name, connectionType); hc != nil {
 			hc.PostponeCheck()
 		}
 

@@ -3,12 +3,14 @@ package proxy
 import (
 	"context"
 	"log/slog"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -69,6 +71,9 @@ type HealthCheckerConfig struct {
 
 	// Chain type (evm or solana)
 	ChainType string `yaml:"chainType,omitempty"`
+
+	// Connection type (http or websocket)
+	ConnectionType string `yaml:"connection.type"`
 }
 
 // BlockNumberUpdateCallback is called when a health checker successfully updates its block number
@@ -104,6 +109,11 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		config.ChainType = "evm"
 	}
 
+	// Set default connection type if not specified
+	if config.ConnectionType == "" {
+		config.ConnectionType = "http"
+	}
+
 	client.SetHeader("User-Agent", userAgent)
 
 	healthchecker := &HealthChecker{
@@ -123,7 +133,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		"provider", config.Name, 
 		"url", config.URL,
 		"path", config.Path,
-		"chainType", config.ChainType)
+		"chainType", config.ChainType,
+		"connectionType", config.ConnectionType)
 
 	return healthchecker, nil
 }
@@ -132,32 +143,80 @@ func (h *HealthChecker) Name() string {
 	return h.config.Name
 }
 
-func (h *HealthChecker) checkBlockNumber(c context.Context) (uint64, error) {
-	var (
-		blockNumber uint64
-		err         error
-	)
+func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
+	var blockNumber uint64
 
-	if h.config.ChainType == "solana" {
-		err = h.client.CallContext(c, &blockNumber, "getSlot")
-	} else {
+	switch {
+	case h.config.ChainType == "solana" && h.config.ConnectionType == "websocket":
+		conn, _, err := websocket.DefaultDialer.DialContext(ctx, h.config.URL, nil)
+		if err != nil {
+			h.config.Logger.Error("Solana WebSocket connection failed", "err", err)
+			return 0, err
+		}
+		defer conn.Close()
+
+		// Subscribe
+		if err := conn.WriteJSON(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe",
+		}); err != nil {
+			return 0, fmt.Errorf("slotSubscribe failed: %w", err)
+		}
+
+		var subResp struct{ Result float64 }
+		if err := conn.ReadJSON(&subResp); err != nil {
+			return 0, fmt.Errorf("subscription response failed: %w", err)
+		}
+		subID := uint64(subResp.Result)
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+		// Wait for slot notification
+		for {
+			var msg struct {
+				Method string `json:"method"`
+				Params struct {
+					Result struct{ Slot uint64 } `json:"result"`
+					Subscription uint64          `json:"subscription"`
+				} `json:"params"`
+			}
+			if err := conn.ReadJSON(&msg); err != nil {
+				return 0, fmt.Errorf("slot notification failed: %w", err)
+			}
+			if msg.Method == "slotNotification" && msg.Params.Subscription == subID {
+				blockNumber = msg.Params.Result.Slot
+				break
+			}
+		}
+
+		// Unsubscribe (optional cleanup)
+		_ = conn.WriteJSON(map[string]any{
+			"jsonrpc": "2.0", "id": 2, "method": "slotUnsubscribe", "params": []any{subID},
+		})
+		_ = conn.ReadJSON(&map[string]any{}) // discard response
+
+	case h.config.ChainType == "solana":
+		var params struct {
+			Commitment string `json:"commitment"`
+		}
+		params.Commitment = "processed"
+		if err := h.client.CallContext(ctx, &blockNumber, "getSlot", params); err != nil {
+			return 0, err
+		}
+
+	default:
 		var ethBlock hexutil.Uint64
-		err = h.client.CallContext(c, &ethBlock, "eth_blockNumber")
+		if err := h.client.CallContext(ctx, &ethBlock, "eth_blockNumber"); err != nil {
+			return 0, err
+		}
 		blockNumber = uint64(ethBlock)
 	}
 
-	if err != nil {
-		h.config.Logger.Error("could not fetch block number",
-			"error", err,
-			"provider", h.config.Name,
-			"path", h.config.Path)
-		return 0, err
-	}
-
-	h.config.Logger.Debug("fetch block number completed",
+	// Common debug log
+	h.config.Logger.Debug("block number fetched",
+		"connectionType", h.config.ConnectionType,
 		"nodeprovider", h.config.Name,
 		"blockNumber", blockNumber,
-		"path", h.config.Path)
+		"path", h.config.Path,
+	)
 
 	return blockNumber, nil
 }
@@ -170,12 +229,14 @@ func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 	gasLeft, err := performGasLeftCall(c, h.httpClient, h.config.URL)
 	if err != nil {
 		h.config.Logger.Error("could not fetch gas left", 
+			"connectionType", h.config.ConnectionType,
 			"error", err,
 			"provider", h.config.Name,
 			"path", h.config.Path)
 		return gasLeft, err
 	}
 	h.config.Logger.Debug("fetch gas left completed", 
+		"connectionType", h.config.ConnectionType,
 		"nodeprovider", h.config.Name, 
 		"gasLeft", gasLeft, 
 		"path", h.config.Path)
@@ -208,6 +269,7 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 	blockNumber, err := h.checkBlockNumber(ctx)
 	if err != nil {
 		h.config.Logger.Info("provider tainted due to block number check failure",
+			"connectionType", h.config.ConnectionType,
 			"provider", h.config.Name,
 			"error", err,
 			"path", h.config.Path)
@@ -237,11 +299,12 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	_, err := h.checkGasLeft(c)
 	if err != nil {
 		h.config.Logger.Info("provider tainted due to gas left check failure",
+			"connectionType", h.config.ConnectionType,
 			"provider", h.config.Name,
 			"error", err,
 			"path", h.config.Path)
-			h.TaintHealthCheck()
-			return
+		h.TaintHealthCheck()
+		return
 	}
 }
 
@@ -363,6 +426,7 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 	})
 
 	h.config.Logger.Info("provider tainted", 
+		"connectionType", h.config.ConnectionType,
 		"path", h.config.Path,
 		"name", h.config.Name,
 		"reason", config.Reason,
@@ -393,6 +457,7 @@ func (h *HealthChecker) RemoveTaint() {
 	h.taint.removalTimer = nil
 	
 	h.config.Logger.Info("taint removed", 
+		"connectionType", h.config.ConnectionType,
 		"path", h.config.Path,
 		"name", h.config.Name,
 		"nextTaintWait", h.taint.waitTime.Seconds())
