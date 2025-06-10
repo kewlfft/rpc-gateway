@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"encoding/json"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -53,9 +54,12 @@ type TaintState struct {
 }
 
 type HealthCheckerConfig struct {
-	URL    string
-	Name   string // identifier imported from RPC gateway config
-	Logger *slog.Logger
+	URL            string
+	Path           string
+	ChainType      string
+	ConnectionType string
+	Logger         *slog.Logger
+	APIKey         string `yaml:"apiKey"`
 
 	// How often to check health.
 	Interval time.Duration `yaml:"healthcheckInterval"`
@@ -66,14 +70,8 @@ type HealthCheckerConfig struct {
 	// Maximum allowed block difference between providers
 	BlockDiffThreshold uint `yaml:"blockDiffThreshold"`
 
-	// Path information
-	Path string
-
-	// Chain type (evm or solana)
-	ChainType string `yaml:"chainType,omitempty"`
-
-	// Connection type (http or websocket)
-	ConnectionType string `yaml:"connection.type"`
+	// Name of the provider
+	Name string
 }
 
 // BlockNumberUpdateCallback is called when a health checker successfully updates its block number
@@ -134,7 +132,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		"url", config.URL,
 		"path", config.Path,
 		"chainType", config.ChainType,
-		"connectionType", config.ConnectionType)
+		"connectionType", config.ConnectionType,
+		"hasApiKey", config.APIKey != "")
 
 	return healthchecker, nil
 }
@@ -202,6 +201,46 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 			return 0, err
 		}
 
+	case h.config.ChainType == "tron":
+		var response struct {
+			BlockID     string `json:"blockID"`
+			BlockHeader struct {
+				RawData struct {
+					Number uint64 `json:"number"`
+				} `json:"raw_data"`
+			} `json:"block_header"`
+		}
+
+		// Create a POST request with empty body
+		req, err := http.NewRequestWithContext(ctx, "POST", h.config.URL+"/wallet/getnowblock", nil)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		// Add API key header if configured
+		if h.config.APIKey != "" {
+			req.Header.Set("TRON-PRO-API-KEY", h.config.APIKey)
+		}
+
+		// Send the request
+		resp, err := h.httpClient.Do(req)
+		if err != nil {
+			return 0, fmt.Errorf("failed to send request: %w", err)
+		}
+		defer resp.Body.Close()
+
+		// Check response status
+		if resp.StatusCode != http.StatusOK {
+			return 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+
+		// Decode response
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			return 0, fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		blockNumber = response.BlockHeader.RawData.Number
+
 	default:
 		var ethBlock hexutil.Uint64
 		if err := h.client.CallContext(ctx, &ethBlock, "eth_blockNumber"); err != nil {
@@ -226,6 +265,11 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 // as blockNumber can be either cached or routed to a different service on the
 // RPC provider's side.
 func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
+	// Skip gas left check for non-EVM chains
+	if h.config.ChainType != "evm" {
+		return 0, nil
+	}
+
 	gasLeft, err := performGasLeftCall(c, h.httpClient, h.config.URL)
 	if err != nil {
 		h.config.Logger.Error("could not fetch gas left", 

@@ -86,6 +86,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				ChainType:       config.ChainType,
 				ConnectionType:  conn.connType,
 				BlockDiffThreshold: uint(config.HealthChecks.BlockDiffThreshold),
+				APIKey:            target.Connection.HTTP.APIKey,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed to create %s health checker for target %s: %w", conn.connType, target.Name, err)
