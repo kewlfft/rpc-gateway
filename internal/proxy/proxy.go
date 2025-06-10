@@ -145,12 +145,24 @@ func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.T
 	)
 }
 
-// ServeHTTP handles incoming HTTP requests
+func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, start time.Time) {
+	duration := time.Since(start).Milliseconds()
+	metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(float64(duration) / 1000)
+	metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
+
+	p.logger.Debug("request handled",
+		"provider", name,
+		"status", status,
+		"method", r.Method,
+		"path", p.hcm.path,
+		"duration_ms", duration,
+	)
+}
+
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	isWebSocket := websocket.IsWebSocketUpgrade(r)
 
-	// Read body once if HTTP
 	var bodyBytes []byte
 	if !isWebSocket {
 		var err error
@@ -162,7 +174,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generic HTTP/WebSocket handling
 	for _, target := range p.targets {
 		name := target.Name()
 		connType := "http"
@@ -182,9 +193,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Handle Tron requests
 		if p.chainType == "tron" {
 			if p.handleTronRequest(w, r, bodyBytes, start, target) {
+				p.logSuccessfulRequest(r, name, http.StatusOK, start) // Replace with actual status if needed
 				return
 			}
 			continue
@@ -223,17 +234,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		duration := time.Since(start).Milliseconds()
-		metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(float64(duration) / 1000)
-		metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
-
-		p.logger.Debug("request handled",
-			"provider", name,
-			"status", rec.Code,
-			"method", r.Method,
-			"path", p.hcm.path,
-			"duration_ms", duration,
-		)
+		p.logSuccessfulRequest(r, name, rec.Code, start)
 		return
 	}
 
