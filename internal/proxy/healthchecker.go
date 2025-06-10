@@ -213,7 +213,7 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 	// Common debug log
 	h.config.Logger.Debug("block number fetched",
 		"connectionType", h.config.ConnectionType,
-		"nodeprovider", h.config.Name,
+		"provider", h.config.Name,
 		"blockNumber", blockNumber,
 		"path", h.config.Path,
 	)
@@ -237,7 +237,7 @@ func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 	}
 	h.config.Logger.Debug("fetch gas left completed", 
 		"connectionType", h.config.ConnectionType,
-		"nodeprovider", h.config.Name, 
+		"provider", h.config.Name, 
 		"gasLeft", gasLeft, 
 		"path", h.config.Path)
 	return gasLeft, nil
