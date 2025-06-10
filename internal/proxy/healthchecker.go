@@ -84,7 +84,6 @@ type HealthChecker struct {
 	blockNumber        uint64
 	mu                 sync.RWMutex // Only for blockNumber and taint state
 	timer              *time.Timer
-	postponeCh         chan struct{}
 	stopCh            chan struct{}
 	taintRemoveCh      chan struct{}
 	stopped           bool
@@ -118,7 +117,6 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		config:     config,
 		client:     client,
 		httpClient: &http.Client{},
-		postponeCh: make(chan struct{}, 1),
 		stopCh:     make(chan struct{}),
 		taintRemoveCh: make(chan struct{}, 1),
 		taint: TaintState{
@@ -352,14 +350,6 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	}
 }
 
-// PostponeCheck resets the health check timer when a request is made
-func (h *HealthChecker) PostponeCheck() {
-	select {
-	case h.postponeCh <- struct{}{}:
-	default:
-	}
-}
-
 func (h *HealthChecker) Start(c context.Context) {
 	// Do an immediate health check on startup
 	h.CheckAndSetHealth()
@@ -380,14 +370,6 @@ func (h *HealthChecker) Start(c context.Context) {
 			return
 		case <-timer.C:
 			h.CheckAndSetHealth()
-			timer.Reset(h.config.Interval)
-		case <-h.postponeCh:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			timer.Reset(h.config.Interval)
 		case <-h.taintRemoveCh:
 			// Clean up taint removal timer

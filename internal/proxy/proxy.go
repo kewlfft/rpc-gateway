@@ -184,9 +184,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !p.hcm.IsHealthy(name, connType) {
 			continue
 		}
-		if hc := p.hcm.GetHealthChecker(name, connType); hc != nil {
-			hc.PostponeCheck()
-		}
 
 		if isWebSocket {
 			target.ServeHTTP(w, r)
@@ -195,7 +192,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if p.chainType == "tron" {
 			if p.handleTronRequest(w, r, bodyBytes, start, target) {
-				p.logSuccessfulRequest(r, name, http.StatusOK, start) // Replace with actual status if needed
+				p.logSuccessfulRequest(r, name, http.StatusOK, start)
 				return
 			}
 			continue
