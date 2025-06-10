@@ -208,7 +208,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(float64(durationMs) / 1000)
 		metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
 
-		p.logger.Debug("request handled by provider",
+		p.logger.Debug("request handled",
 			"provider", name,
 			"status", rec.Code,
 			"method", r.Method,
