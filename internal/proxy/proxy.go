@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/errors"
@@ -44,6 +45,14 @@ func (d Duration) LogValue() slog.Value {
 	return slog.StringValue(time.Duration(d).String())
 }
 
+// ChainTypeHandler is an interface that extends http.Handler with chain type information
+type ChainTypeHandler interface {
+	http.Handler
+	GetChainType() string
+	RandomizeProviders()
+	GetHealthCheckManager() *HealthCheckManager
+}
+
 // Proxy represents an RPC proxy with health checking and failover
 type Proxy struct {
 	hcm       *HealthCheckManager
@@ -52,6 +61,9 @@ type Proxy struct {
 	targets   []*NodeProvider
 	chainType string
 }
+
+// Ensure Proxy implements ChainTypeHandler
+var _ ChainTypeHandler = (*Proxy)(nil)
 
 // RandomizeProviders randomizes the order of providers in the targets slice
 func (p *Proxy) RandomizeProviders() {
@@ -149,36 +161,106 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
+	p.logger.Debug("Received request", "body", string(bodyBytes), "provider", p.hcm.path)
 	// Special handling for Tron requests (all methods)
 	if p.chainType == "tron" && !isWebSocket {
-		// Parse the JSON-RPC request
+		p.logger.Debug("Handling Tron request",
+			"path", r.URL.Path,
+			"method", r.Method,
+			"body", string(bodyBytes))
+
+		// Check if this is a direct path request (e.g., /wallet/gettransactionlistfrompending)
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/wallet/") {
+			p.logger.Debug("Handling direct Tron path request",
+				"path", path,
+				"method", r.Method,
+				"body", string(bodyBytes))
+
+			method := strings.TrimPrefix(path, "/wallet/")
+			// Forward the request to the upstream Tron RPC service
+			for _, target := range p.targets {
+				name := target.Name()
+				connectionType := "http"
+				if !p.hcm.IsHealthy(name, connectionType) {
+					continue
+				}
+				if hc := p.hcm.GetHealthChecker(name, connectionType); hc != nil {
+					hc.PostponeCheck()
+				}
+
+				// Build the upstream URL
+				upstreamURL := target.config.Connection.HTTP.URL + "/wallet/" + method
+				upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(bodyBytes))
+				if err != nil {
+					continue
+				}
+				upstreamReq.Header.Set("Content-Type", "application/json")
+				// Set API key if present
+				apiKey := target.config.Connection.HTTP.APIKey
+				if apiKey != "" {
+					upstreamReq.Header.Set("TRON-PRO-API-KEY", apiKey)
+				}
+
+				client := &http.Client{Timeout: p.timeout}
+				resp, err := client.Do(upstreamReq)
+				if err != nil {
+					p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
+					continue
+				}
+				defer resp.Body.Close()
+
+				respBody, err := io.ReadAll(resp.Body)
+				if err != nil {
+					p.handleProviderFailure(name, r, start, resp.StatusCode, err)
+					continue
+				}
+
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
+					continue
+				}
+
+				// Forward the response as-is
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write(respBody)
+				return
+			}
+			p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Parse the request body to get the method
 		var reqBody map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
 			p.writeErrorResponse(w, r, "Invalid JSON request", http.StatusBadRequest)
 			return
 		}
+
+		p.logger.Debug("Received request", "body", string(bodyBytes), "provider", p.hcm.path)
+
+		// Debug log the incoming request
+		p.logger.Debug("Received Tron request",
+			"body", string(bodyBytes),
+			"method", reqBody["method"],
+			"params", reqBody["params"],
+			"id", reqBody["id"],
+			"jsonrpc", reqBody["jsonrpc"])
+
 		method, ok := reqBody["method"].(string)
 		if !ok {
 			p.writeErrorResponse(w, r, "Missing method in request", http.StatusBadRequest)
 			return
 		}
-		params, _ := reqBody["params"].([]interface{})
-		id := reqBody["id"]
 
-		// Prepare the body for Tron: use params[0] if present and is an object, else {}
-		var tronBody []byte
-		if len(params) > 0 {
-			if m, ok := params[0].(map[string]interface{}); ok {
-				tronBody, _ = json.Marshal(m)
-			} else {
-				tronBody = []byte("{}")
-			}
-		} else {
-			tronBody = []byte("{}")
+		// Extract the actual method name (remove wallet/ prefix if present)
+		actualMethod := method
+		if strings.HasPrefix(method, "wallet/") {
+			actualMethod = strings.TrimPrefix(method, "wallet/")
 		}
 
-		// Try each provider
+		// Forward the request to the upstream Tron RPC service
 		for _, target := range p.targets {
 			name := target.Name()
 			connectionType := "http"
@@ -190,8 +272,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Build the upstream URL
-			upstreamURL := target.config.Connection.HTTP.URL + "/wallet/" + method
-			upstreamReq, err := http.NewRequestWithContext(r.Context(), "POST", upstreamURL, bytes.NewReader(tronBody))
+			upstreamURL := target.config.Connection.HTTP.URL + "/wallet/" + actualMethod
+			upstreamReq, err := http.NewRequestWithContext(r.Context(), "POST", upstreamURL, bytes.NewReader(bodyBytes))
 			if err != nil {
 				continue
 			}
@@ -221,19 +303,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			// Wrap the Tron response in a JSON-RPC envelope
+			// Forward the response as-is
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"jsonrpc":"2.0","id":`))
-			if id == nil {
-				w.Write([]byte("null"))
-			} else {
-				idBytes, _ := json.Marshal(id)
-				w.Write(idBytes)
-			}
-			w.Write([]byte(`,"result":`))
 			w.Write(respBody)
-			w.Write([]byte("}"))
 			return
 		}
 		p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
@@ -317,6 +390,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // GetHealthCheckManager returns the health check manager for this proxy
 func (p *Proxy) GetHealthCheckManager() *HealthCheckManager {
 	return p.hcm
+}
+
+// GetChainType returns the chain type of the proxy
+func (p *Proxy) GetChainType() string {
+	return p.chainType
 }
 
 // GetTargets returns a copy of the targets slice

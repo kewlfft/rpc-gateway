@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/metrics"
@@ -20,7 +21,7 @@ import (
 
 type RPCGateway struct {
 	config  RPCGatewayConfig
-	proxies map[string]*proxy.Proxy
+	proxies map[string]proxy.ChainTypeHandler
 	hcms    map[string]*proxy.HealthCheckManager
 	server  *http.Server
 	metrics *metrics.Server
@@ -124,7 +125,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	}
 
 	// Initialize maps for proxies and health check managers
-	proxies := make(map[string]*proxy.Proxy)
+	proxies := make(map[string]proxy.ChainTypeHandler)
 	hcms := make(map[string]*proxy.HealthCheckManager)
 
 	// Create health check managers and proxies for each proxy config
@@ -179,6 +180,9 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 
 	// Handle each proxy path
 	for path, p := range proxies {
+		// Get the chain type for this proxy
+		chainType := p.GetChainType()
+
 		// Define a reusable handler constructor
 		handler := func(p http.Handler, stripPath bool) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
@@ -195,17 +199,33 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 					return
 				}
 
-				if stripPath {
+				// For Tron requests, preserve the full path
+				if chainType == "tron" {
+					// Remove the proxy path prefix (e.g., /trx) from the URL path
+					r.URL.Path = strings.TrimPrefix(r.URL.Path, "/"+path)
+					if r.URL.Path == "" {
+						r.URL.Path = "/"
+					}
+				} else if stripPath {
 					r.URL.Path = "/"
 				}
+
+				logger.Debug("modified request path",
+					"original_path", r.URL.Path,
+					"chain_type", chainType,
+					"strip_path", stripPath)
+
 				p.ServeHTTP(w, r)
 			}
 		}
 
 		r.Handle(fmt.Sprintf("/%s", path), handler(p, true))
 		r.Handle(fmt.Sprintf("/%s/", path), handler(p, true))
+		// Add a catch-all route for Tron paths
+		if chainType == "tron" {
+			r.Handle(fmt.Sprintf("/%s/*", path), handler(p, true))
+		}
 	}
-
 
 	return &RPCGateway{
 		config:  config,
