@@ -184,7 +184,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Handle Tron requests
 		if p.chainType == "tron" {
-			if p.handleTronRequest(w, r, bodyBytes, start) {
+			if p.handleTronRequest(w, r, bodyBytes, start, target) {
 				return
 			}
 			continue
@@ -242,87 +242,69 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleTronRequest handles Tron-specific HTTP forwarding logic.
 // Returns:
-//   - true if request was handled (success or invalid request)
-//   - false if all providers failed
-func (p *Proxy) handleTronRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time) bool {
+// true: request was successfully proxied through the given target, response sent to client
+// false: request failed on that target (network error, bad response, etc.)
+func (p *Proxy) handleTronRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider) bool {
 	const walletPrefix = "/wallet/"
+	var method string
 
-	// Direct REST-style Tron API (e.g., /wallet/gettransactionbyid)
 	if strings.HasPrefix(r.URL.Path, walletPrefix) {
-		method := strings.TrimPrefix(r.URL.Path, walletPrefix)
-		return p.forwardTronCall(w, r, start, method, body)
+		method = strings.TrimPrefix(r.URL.Path, walletPrefix)
+	} else {
+		var parsed map[string]any
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			p.writeErrorResponse(w, r, "Invalid JSON request", http.StatusBadRequest)
+			return true
+		}
+		m, ok := parsed["method"].(string)
+		if !ok {
+			p.writeErrorResponse(w, r, "Missing method in request", http.StatusBadRequest)
+			return true
+		}
+		method = strings.TrimPrefix(m, "wallet/")
 	}
 
-	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		p.writeErrorResponse(w, r, "Invalid JSON request", http.StatusBadRequest)
-		return true
-	}
-
-	method, ok := parsed["method"].(string)
-	if !ok {
-		p.writeErrorResponse(w, r, "Missing method in request", http.StatusBadRequest)
-		return true
-	}
-
-	method = strings.TrimPrefix(method, "wallet/")
-	return p.forwardTronCall(w, r, start, method, body)
+	return p.forwardTronCall(w, r, start, target, method, body)
 }
 
 // forwardTronCall sends the request to healthy Tron targets.
 // Returns true if request was handled, false if all providers failed.
-func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start time.Time, method string, body []byte) bool {
-	client := &http.Client{Timeout: p.timeout}
-	contentType := "application/json"
+func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start time.Time, target *NodeProvider, method string, body []byte) bool {
+	name := target.Name()
 
-	for _, target := range p.targets {
-		name := target.Name()
-
-		if !p.hcm.IsHealthy(name, "http") {
-			continue
-		}
-		if hc := p.hcm.GetHealthChecker(name, "http"); hc != nil {
-			hc.PostponeCheck()
-		}
-
-		url := target.config.Connection.HTTP.URL + "/wallet/" + method
-		req, err := http.NewRequestWithContext(r.Context(), "POST", url, bytes.NewReader(body))
-		if err != nil {
-			continue
-		}
-
-		req.Header.Set("Content-Type", contentType)
-		if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
-			req.Header.Set("TRON-PRO-API-KEY", apiKey)
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
-			continue
-		}
-
-		bodyData, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			p.handleProviderFailure(name, r, start, resp.StatusCode, err)
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
-			continue
-		}
-
-		// Send successful response
-		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(bodyData)
-		return true
+	url := target.config.Connection.HTTP.URL + "/wallet/" + method
+	req, err := http.NewRequestWithContext(r.Context(), "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return false
 	}
 
-	return false
-}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
+		req.Header.Set("TRON-PRO-API-KEY", apiKey)
+	}
 
+	resp, err := (&http.Client{Timeout: p.timeout}).Do(req)
+	if err != nil {
+		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	bodyData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		p.handleProviderFailure(name, r, start, resp.StatusCode, err)
+		return false
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
+		return false
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(bodyData)
+	return true
+}
 
 // GetHealthCheckManager returns the health check manager for this proxy
 func (p *Proxy) GetHealthCheckManager() *HealthCheckManager {
