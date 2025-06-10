@@ -199,9 +199,9 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 					return
 				}
 
-				// For Tron requests, preserve the full path
+				// For Tron chain type, preserve the full path to handle wallet/ endpoints
 				if chainType == "tron" {
-					// Remove the proxy path prefix (e.g., /trx) from the URL path
+					// Remove the proxy path prefix from the URL path
 					r.URL.Path = strings.TrimPrefix(r.URL.Path, "/"+path)
 					if r.URL.Path == "" {
 						r.URL.Path = "/"
@@ -221,7 +221,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 
 		r.Handle(fmt.Sprintf("/%s", path), handler(p, true))
 		r.Handle(fmt.Sprintf("/%s/", path), handler(p, true))
-		// Add a catch-all route for Tron paths
+		// Add a catch-all route for Tron chain type to handle wallet/ endpoints
 		if chainType == "tron" {
 			r.Handle(fmt.Sprintf("/%s/*", path), handler(p, true))
 		}

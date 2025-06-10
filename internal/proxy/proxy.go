@@ -161,24 +161,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p.logger.Debug("Received request", "body", string(bodyBytes), "provider", p.hcm.path)
-	// Special handling for Tron requests (all methods)
+	// Special handling for Tron chain type (all methods)
 	if p.chainType == "tron" && !isWebSocket {
-		p.logger.Debug("Handling Tron request",
-			"path", r.URL.Path,
-			"method", r.Method,
-			"body", string(bodyBytes))
-
 		// Check if this is a direct path request (e.g., /wallet/gettransactionlistfrompending)
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/wallet/") {
-			p.logger.Debug("Handling direct Tron path request",
+			p.logger.Debug("Handling Tron wallet endpoint request",
 				"path", path,
 				"method", r.Method,
 				"body", string(bodyBytes))
 
 			method := strings.TrimPrefix(path, "/wallet/")
-			// Forward the request to the upstream Tron RPC service
+			// Forward the request to the upstream Tron node
 			for _, target := range p.targets {
 				name := target.Name()
 				connectionType := "http"
