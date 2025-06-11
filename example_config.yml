@@ -2,7 +2,7 @@
 metrics:
   port: 9010 # port for prometheus metrics, served on /metrics and /
 
-port: 3000 # port for RPC gateway
+port: 4000 # port for RPC gateway
 
 randomizeProviders: true # randomize the order of providers at startup for all proxies
 
