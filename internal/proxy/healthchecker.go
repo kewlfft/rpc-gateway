@@ -116,7 +116,9 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 	healthchecker := &HealthChecker{
 		config:     config,
 		client:     client,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{
+			Timeout: config.Timeout,
+		},
 		stopCh:     make(chan struct{}),
 		taintRemoveCh: make(chan struct{}, 1),
 		taint: TaintState{
