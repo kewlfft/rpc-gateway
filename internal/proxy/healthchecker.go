@@ -400,11 +400,7 @@ func (h *HealthChecker) Stop(_ context.Context) error {
 }
 
 func (h *HealthChecker) IsHealthy() bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	// Being tainted is equivalent to unhealthy
-	return !h.taint.isTainted
+	return !h.IsTainted()
 }
 
 func (h *HealthChecker) IsTainted() bool {
@@ -414,7 +410,7 @@ func (h *HealthChecker) IsTainted() bool {
 }
 
 // Taint marks the provider as unhealthy for a configurable duration
-func (h *HealthChecker) Taint(config TaintConfig) {
+func (h *HealthChecker) Taint(cfg TaintConfig) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -422,44 +418,48 @@ func (h *HealthChecker) Taint(config TaintConfig) {
 		return
 	}
 
-	// Update taint configuration
-	h.taint.config = config
+	now := time.Now()
 
-	// Calculate new wait time
-	if time.Since(h.taint.lastRemoval) <= config.ResetWaitDuration {
-		h.taint.waitTime *= 2
-		if h.taint.waitTime > config.MaxWaitTime {
-			h.taint.waitTime = config.MaxWaitTime
+	// Determine new wait time
+	var wait time.Duration
+	if now.Sub(h.taint.lastRemoval) <= cfg.ResetWaitDuration {
+		wait = h.taint.waitTime * 2
+		if wait > cfg.MaxWaitTime {
+			wait = cfg.MaxWaitTime
 		}
 	} else {
-		h.taint.waitTime = config.InitialWaitTime
+		wait = cfg.InitialWaitTime
 	}
 
-	// Stop any existing removal timer
-	if h.taint.removalTimer != nil {
-		h.taint.removalTimer.Stop()
+	// Cancel old timer if any
+	if timer := h.taint.removalTimer; timer != nil {
+		timer.Stop()
 	}
 
-	// Set taint state
-	h.taint.isTainted = true
-	h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, func() {
-		h.RemoveTaint()
-		// Signal cleanup
-		select {
-		case h.taintRemoveCh <- struct{}{}:
-		default:
-		}
-	})
+	// Apply taint
+	h.taint = TaintState{
+		isTainted:     true,
+		config:        cfg,
+		waitTime:      wait,
+		removalTimer:  time.AfterFunc(wait, func() {
+			h.RemoveTaint()
+			select {
+			case h.taintRemoveCh <- struct{}{}:
+			default:
+			}
+		}),
+		lastRemoval: h.taint.lastRemoval, // preserve existing value
+	}
 
-	h.config.Logger.Info("provider tainted", 
-		"connectionType", h.config.ConnectionType,
-		"path", h.config.Path,
+	h.config.Logger.Info("provider tainted",
+		"conn", h.config.ConnectionType,
 		"name", h.config.Name,
-		"reason", config.Reason,
-		"waitTime", h.taint.waitTime.Seconds(),
-		"nextRemoval", time.Now().Add(h.taint.waitTime))
+		"path", h.config.Path,
+		"reason", cfg.Reason,
+		"retry_sec", wait.Seconds(),
+		"next_retry", now.Add(wait),
+	)
 }
-
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
 func (h *HealthChecker) TaintHTTP() {
 	h.Taint(httpTaintConfig)
