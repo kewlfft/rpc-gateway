@@ -174,6 +174,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		bodyBytes, err = io.ReadAll(r.Body)
 		r.Body.Close()
 		if err != nil {
+			p.logger.Error("failed to read request body",
+				"error", err,
+				"method", r.Method,
+				"path", r.URL.Path)
 			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
@@ -211,11 +215,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if err, ok := req.Context().Value("error").(error); ok {
 			status, _ := req.Context().Value("statusCode").(int)
+			p.logger.Error("provider request failed",
+				"provider", name,
+				"status", status,
+				"error", err,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"request_body", string(bodyBytes))
 			p.handleProviderFailure(name, r, start, status, err)
 			continue
 		}
 
 		if p.HasNodeProviderFailed(rec.Code) {
+			p.logger.Error("provider returned error status",
+				"provider", name,
+				"status", rec.Code,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"request_body", string(bodyBytes))
 			p.handleProviderFailure(name, r, start, rec.Code, nil)
 			continue
 		}
