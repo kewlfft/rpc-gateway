@@ -159,34 +159,6 @@ func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, s
 	)
 }
 
-// validateJSONRPCRequest validates the request body for JSON-RPC format
-func (p *Proxy) validateJSONRPCRequest(body []byte) error {
-	if len(body) == 0 {
-		return fmt.Errorf("empty request body")
-	}
-
-	var request struct {
-		JSONRPC string          `json:"jsonrpc"`
-		Method  string          `json:"method"`
-		Params  json.RawMessage `json:"params"`
-		ID      interface{}     `json:"id"`
-	}
-
-	if err := json.Unmarshal(body, &request); err != nil {
-		return fmt.Errorf("invalid JSON-RPC request format: %w", err)
-	}
-
-	if request.JSONRPC != "2.0" {
-		return fmt.Errorf("invalid JSON-RPC version: %s", request.JSONRPC)
-	}
-
-	if request.Method == "" {
-		return fmt.Errorf("missing method in JSON-RPC request")
-	}
-
-	return nil
-}
-
 // generateRequestID generates a unique request ID
 func generateRequestID() string {
 	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())
@@ -194,11 +166,7 @@ func generateRequestID() string {
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	requestID := generateRequestID()
 	isWebSocket := websocket.IsWebSocketUpgrade(r)
-
-	// Add request ID to response headers
-	w.Header().Set("X-Request-ID", requestID)
 
 	var bodyBytes []byte
 	if !isWebSocket {
@@ -206,21 +174,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		bodyBytes, err = io.ReadAll(r.Body)
 		r.Body.Close()
 		if err != nil {
-			p.logger.Error("failed to read request body",
-				"request_id", requestID,
-				"error", err)
 			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
-			return
-		}
-
-		// Validate JSON-RPC request body
-		if err := p.validateJSONRPCRequest(bodyBytes); err != nil {
-			p.logger.Warn("invalid request body",
-				"request_id", requestID,
-				"error", err,
-				"path", r.URL.Path,
-				"method", r.Method)
-			p.writeErrorResponse(w, r, err.Error(), http.StatusBadRequest)
 			return
 		}
 	}
@@ -233,10 +187,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !p.hcm.IsHealthy(name, connType) {
-			p.logger.Debug("skipping unhealthy provider",
-				"request_id", requestID,
-				"provider", name,
-				"connection_type", connType)
 			continue
 		}
 
@@ -262,20 +212,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err, ok := req.Context().Value("error").(error); ok {
 			status, _ := req.Context().Value("statusCode").(int)
 			p.handleProviderFailure(name, r, start, status, err)
-			p.logger.Warn("provider request failed",
-				"request_id", requestID,
-				"provider", name,
-				"status", status,
-				"error", err)
 			continue
 		}
 
 		if p.HasNodeProviderFailed(rec.Code) {
 			p.handleProviderFailure(name, r, start, rec.Code, nil)
-			p.logger.Warn("provider returned error status",
-				"request_id", requestID,
-				"provider", name,
-				"status", rec.Code)
 			continue
 		}
 
@@ -299,10 +240,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.logger.Error("all providers failed",
-		"request_id", requestID,
-		"path", r.URL.Path,
-		"method", r.Method)
 	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
 }
 
