@@ -139,6 +139,7 @@ func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.T
 		"status", statusCode,
 		"error", err,
 		"method", r.Method,
+		"upstream_path", r.URL.Path,
 		"path", p.hcm.path,
 		"duration_ms", durationMs,
 		"connectionType", connectionType,
