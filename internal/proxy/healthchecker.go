@@ -470,13 +470,16 @@ func (h *HealthChecker) TaintHealthCheck() {
 }
 
 func (h *HealthChecker) RemoveTaint() {
+	// Update atomic state first since it's lock-free
 	h.isTainted.Store(false)
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	
 	h.taint.lastRemoval.Store(time.Now().UnixNano())
-	h.taint.removalTimer = nil
 	
+	// Only lock for timer cleanup
+	h.mu.Lock()
+	h.taint.removalTimer = nil
+	h.mu.Unlock()
+	
+	// Log after all state updates are complete
 	h.config.Logger.Info("taint removed", 
 		"connectionType", h.config.ConnectionType,
 		"path", h.config.Path,
