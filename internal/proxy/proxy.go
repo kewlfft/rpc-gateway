@@ -222,7 +222,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error", err,
 				"method", r.Method,
 				"path", r.URL.Path,
-				"request_body", string(bodyBytes))
+				"request_body", string(bodyBytes),
+				"provider_url", target.config.Connection.HTTP.URL)
 			p.handleProviderFailure(name, r, start, status, err)
 			continue
 		}
@@ -233,7 +234,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"status", rec.Code,
 				"method", r.Method,
 				"path", r.URL.Path,
-				"request_body", string(bodyBytes))
+				"request_body", string(bodyBytes),
+				"provider_url", target.config.Connection.HTTP.URL)
 			p.handleProviderFailure(name, r, start, rec.Code, nil)
 			continue
 		}

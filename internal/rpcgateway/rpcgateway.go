@@ -207,6 +207,8 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 						r.URL.Path = "/"
 					}
 				} else if stripPath {
+					// For non-Tron chains, we want to preserve the provider's path
+					// but strip any additional path components from the request
 					r.URL.Path = "/"
 				}
 
