@@ -104,28 +104,25 @@ func (r *RPCGateway) Stop(c context.Context) error {
 }
 
 func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
-	logLevel := slog.LevelWarn
-
 	// Set log level based on LOG_LEVEL environment variable
-	if logLevelStr := os.Getenv("LOG_LEVEL"); logLevelStr != "" {
-		switch logLevelStr {
-		case "debug":
-			logLevel = slog.LevelDebug
-		case "info":
-			logLevel = slog.LevelInfo
-		case "warn":
-			logLevel = slog.LevelWarn
-		case "error":
-			logLevel = slog.LevelError
-		default:
-			// If invalid level is provided, use warn as default
-			logLevel = slog.LevelWarn
-		}
+	logLevel := map[string]slog.Level{
+		"debug": slog.LevelDebug,
+		"info":  slog.LevelInfo,
+		"warn":  slog.LevelWarn,
+		"error": slog.LevelError,
+	}[strings.ToLower(os.Getenv("LOG_LEVEL"))]
+	if logLevel == 0 {
+		logLevel = slog.LevelWarn // Default to warn
 	}
 
 	// Initialize maps for proxies and health check managers
 	proxies := make(map[string]proxy.ChainTypeHandler)
 	hcms := make(map[string]*proxy.HealthCheckManager)
+
+	logger := slog.New(
+		slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level: logLevel,
+		}))
 
 	// Create health check managers and proxies for each proxy config
 	for _, proxyConfig := range config.Proxies {
@@ -141,10 +138,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			Timeout:         timeout,
 			HealthChecks:    proxyConfig.HealthChecks,
 			Targets:         proxyConfig.Targets,
-			Logger: slog.New(
-				slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-					Level: logLevel,
-				})),
+			Logger:          logger,
 			DisableHealthChecks: true, // Always disable health checks in NewProxy
 		}
 
@@ -199,11 +193,14 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			}
 		}
 
-		r.Handle(fmt.Sprintf("/%s", path), handler(p))
-		r.Handle(fmt.Sprintf("/%s/", path), handler(p))
-		// Add a catch-all route for Tron chain type to handle wallet/ endpoints
+		// Register base path and trailing slash path
+		basePath := fmt.Sprintf("/%s", path)
+		r.Handle(basePath, handler(p))
+		r.Handle(basePath+"/", handler(p))
+		
+		// Add catch-all route for Tron chain type
 		if chainType == "tron" {
-			r.Handle(fmt.Sprintf("/%s/*", path), handler(p))
+			r.Handle(basePath+"/*", handler(p))
 		}
 	}
 
@@ -226,8 +223,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	}, nil
 }
 
-// NewRPCGatewayFromConfigFile creates an instance of RPCGateway from provided
-// configuration file.
+// NewRPCGatewayFromConfigFile creates an instance of RPCGateway from provided configuration file.
 func NewRPCGatewayFromConfigFile(s string) (*RPCGateway, error) {
 	data, err := os.ReadFile(s)
 	if err != nil {
