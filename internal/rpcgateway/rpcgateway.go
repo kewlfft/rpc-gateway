@@ -186,15 +186,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		// Define a reusable handler constructor
 		handler := func(p http.Handler, stripPath bool) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
-				logger := slog.Default()
-				logger.Debug("handling request",
-					"path", r.URL.Path,
-					"method", r.Method,
-					"upgrade", r.Header.Get("Upgrade"),
-					"connection", r.Header.Get("Connection"))
-
 				if websocket.IsWebSocketUpgrade(r) {
-					logger.Debug("websocket upgrade request detected")
 					p.ServeHTTP(w, r)
 					return
 				}
@@ -211,11 +203,6 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 					// but strip any additional path components from the request
 					r.URL.Path = "/"
 				}
-
-				logger.Debug("modified request path",
-					"original_path", r.URL.Path,
-					"chain_type", chainType,
-					"strip_path", stripPath)
 
 				p.ServeHTTP(w, r)
 			}
