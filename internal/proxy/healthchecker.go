@@ -413,14 +413,13 @@ func (h *HealthChecker) IsTainted() bool {
 
 // Taint marks the provider as unhealthy for a configurable duration
 func (h *HealthChecker) Taint(cfg TaintConfig) {
+	now := time.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.taint.isTainted {
 		return
 	}
-
-	now := time.Now()
 
 	// Determine new wait time
 	var wait time.Duration
