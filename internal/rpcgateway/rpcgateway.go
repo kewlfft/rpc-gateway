@@ -74,7 +74,7 @@ func checkPortAvailability(port string) error {
 	if err != nil {
 		return fmt.Errorf("port %s is not available: %w", port, err)
 	}
-	ln.Close()
+	defer ln.Close()
 	return nil
 }
 
