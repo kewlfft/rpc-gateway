@@ -10,13 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/gorilla/websocket"
 	"github.com/kewlfft/rpc-gateway/internal/metrics"
 	"github.com/kewlfft/rpc-gateway/internal/proxy"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
-	"github.com/gorilla/websocket"
 )
 
 type RPCGateway struct {
@@ -168,11 +167,6 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	}
 
 	r := chi.NewRouter()
-
-	// Recoverer is a middleware that recovers from panics, logs the panic (and
-	// a backtrace), and returns a HTTP 500 (Internal Server Error) status if
-	// possible. Recoverer prints a request ID if one is provided.
-	r.Use(middleware.Recoverer)
 
 	// Handle each proxy path
 	for path, p := range proxies {
