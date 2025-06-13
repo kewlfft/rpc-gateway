@@ -200,7 +200,6 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}
 
 		r.Handle(fmt.Sprintf("/%s", path), handler(p))
-		r.Handle(fmt.Sprintf("/%s/", path), handler(p))
 		// Add a catch-all route for Tron chain type to handle wallet/ endpoints
 		if chainType == "tron" {
 			r.Handle(fmt.Sprintf("/%s/*", path), handler(p))
