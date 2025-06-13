@@ -398,20 +398,17 @@ func (h *HealthChecker) IsTainted() bool {
 	return h.isTainted.Load()
 }
 
-// Taint marks the provider as unhealthy for a configurable duration
 func (h *HealthChecker) Taint(cfg TaintConfig) {
 	// Phase 1: Immediate atomic taint
 	h.isTainted.Store(true)
 
-	nowNanos := time.Now().UnixNano()
-
-	// Phase 2: Compute wait and update state under lock
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// Phase 2: Calculate timing values
+	now := time.Now()
+	nowNanos := now.UnixNano()
+	lastRemovalNanos := h.taint.lastRemoval.Load()
 
 	var wait time.Duration
-	lastRemovalNanos := h.taint.lastRemoval.Load()
-	if nowNanos-lastRemovalNanos <= int64(cfg.ResetWaitDuration) {
+	if nowNanos - lastRemovalNanos <= int64(cfg.ResetWaitDuration) {
 		wait = time.Duration(h.taint.waitTime.Load()) * 2
 		if wait > cfg.MaxWaitTime {
 			wait = cfg.MaxWaitTime
@@ -419,6 +416,9 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 	} else {
 		wait = cfg.InitialWaitTime
 	}
+
+	// Phase 3: Minimal lock section for timer and config update
+	h.mu.Lock()
 
 	// Cancel old timer safely
 	if oldTimer := h.taint.removalTimer; oldTimer != nil {
@@ -430,11 +430,7 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		}
 	}
 
-	// Store updated values
-	h.taint.lastRemoval.Store(nowNanos)
-	h.taint.waitTime.Store(int64(wait))
-
-	// Start removal timer
+	// Assign new timer and config
 	h.taint.removalTimer = time.AfterFunc(wait, func() {
 		h.RemoveTaint()
 		select {
@@ -444,13 +440,21 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 	})
 	h.taint.config = cfg
 
+	h.mu.Unlock()
+
+	// Phase 4: Atomic write of timing data after unlock
+	h.taint.lastRemoval.Store(nowNanos)
+	h.taint.waitTime.Store(int64(wait))
+
+	// Phase 5: Logging
+	nextRetry := time.Unix(0, nowNanos+int64(wait))
 	h.config.Logger.Info("provider tainted",
 		"conn", h.config.ConnectionType,
 		"name", h.config.Name,
 		"path", h.config.Path,
 		"reason", cfg.Reason,
 		"retry_sec", wait.Seconds(),
-		"next_retry", now.Add(wait),
+		"next_retry", nextRetry,
 	)
 }
 
