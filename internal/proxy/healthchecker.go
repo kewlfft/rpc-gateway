@@ -93,7 +93,7 @@ type HealthChecker struct {
 	taint TaintState
 
 	// callback function to be called when block number is updated
-	onBlockNumberUpdate BlockNumberUpdateCallback
+	onBlockNumberUpdate atomic.Value
 }
 
 func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
@@ -302,9 +302,7 @@ func (h *HealthChecker) CheckAndSetHealth() {
 
 // SetBlockNumberUpdateCallback sets the callback function to be called when block number is updated.
 func (h *HealthChecker) SetBlockNumberUpdateCallback(callback BlockNumberUpdateCallback) {
-	h.mu.Lock()
-	h.onBlockNumberUpdate = callback
-	h.mu.Unlock()
+	h.onBlockNumberUpdate.Store(callback)
 }
 
 func (h *HealthChecker) checkAndSetBlockNumberHealth() {
@@ -324,11 +322,7 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 
 	h.blockNumber.Store(blockNumber)
 	
-	h.mu.RLock()
-	callback := h.onBlockNumberUpdate
-	h.mu.RUnlock()
-
-	if callback != nil {
+	if callback, ok := h.onBlockNumberUpdate.Load().(BlockNumberUpdateCallback); ok && callback != nil {
 		callback(blockNumber)
 	}
 }
