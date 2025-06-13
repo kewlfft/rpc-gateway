@@ -47,8 +47,8 @@ var (
 
 // TaintState represents the current state of a health checker
 type TaintState struct {
-	lastRemoval time.Time
-	waitTime    time.Duration
+	lastRemoval atomic.Int64  // Unix nanoseconds
+	waitTime    atomic.Int64  // Duration in nanoseconds
 	removalTimer *time.Timer
 	config      TaintConfig
 }
@@ -400,19 +400,19 @@ func (h *HealthChecker) IsTainted() bool {
 
 // Taint marks the provider as unhealthy for a configurable duration
 func (h *HealthChecker) Taint(cfg TaintConfig) {
-	// Phase 1: Immediate taint
+	// Phase 1: Immediate atomic taint
 	h.isTainted.Store(true)
-	
-	// Phase 2: Setup removal timer and state
+
+	nowNanos := time.Now().UnixNano()
+
+	// Phase 2: Compute wait and update state under lock
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	now := time.Now()
-
-	// Determine new wait time
 	var wait time.Duration
-	if now.Sub(h.taint.lastRemoval) <= cfg.ResetWaitDuration {
-		wait = h.taint.waitTime * 2
+	lastRemovalNanos := h.taint.lastRemoval.Load()
+	if nowNanos-lastRemovalNanos <= int64(cfg.ResetWaitDuration) {
+		wait = time.Duration(h.taint.waitTime.Load()) * 2
 		if wait > cfg.MaxWaitTime {
 			wait = cfg.MaxWaitTime
 		}
@@ -420,24 +420,29 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		wait = cfg.InitialWaitTime
 	}
 
-	// Cancel old timer if any
-	if timer := h.taint.removalTimer; timer != nil {
-		timer.Stop()
-	}
-
-	// Update taint state
-	h.taint = TaintState{
-		lastRemoval: h.taint.lastRemoval, // preserve existing value
-		waitTime:    wait,
-		removalTimer: time.AfterFunc(wait, func() {
-			h.RemoveTaint()
+	// Cancel old timer safely
+	if oldTimer := h.taint.removalTimer; oldTimer != nil {
+		if !oldTimer.Stop() {
 			select {
-			case h.taintRemoveCh <- struct{}{}:
+			case <-oldTimer.C:
 			default:
 			}
-		}),
-		config: cfg,
+		}
 	}
+
+	// Store updated values
+	h.taint.lastRemoval.Store(nowNanos)
+	h.taint.waitTime.Store(int64(wait))
+
+	// Start removal timer
+	h.taint.removalTimer = time.AfterFunc(wait, func() {
+		h.RemoveTaint()
+		select {
+		case h.taintRemoveCh <- struct{}{}:
+		default:
+		}
+	})
+	h.taint.config = cfg
 
 	h.config.Logger.Info("provider tainted",
 		"conn", h.config.ConnectionType,
@@ -464,14 +469,14 @@ func (h *HealthChecker) RemoveTaint() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	
-	h.taint.lastRemoval = time.Now()
+	h.taint.lastRemoval.Store(time.Now().UnixNano())
 	h.taint.removalTimer = nil
 	
 	h.config.Logger.Info("taint removed", 
 		"connectionType", h.config.ConnectionType,
 		"path", h.config.Path,
 		"name", h.config.Name,
-		"nextTaintWait", h.taint.waitTime.Seconds())
+		"nextTaintWait", time.Duration(h.taint.waitTime.Load()).Seconds())
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {
