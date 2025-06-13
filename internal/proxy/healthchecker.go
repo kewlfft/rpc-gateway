@@ -81,12 +81,12 @@ type HealthChecker struct {
 	config              HealthCheckerConfig
 	client              *rpc.Client
 	httpClient          *http.Client
-	blockNumber        uint64
-	mu                 sync.RWMutex // Only for blockNumber and taint state
+	blockNumber        atomic.Uint64
+	mu                 sync.RWMutex // Only for taint state
 	timer              *time.Timer
 	stopCh            chan struct{}
 	taintRemoveCh      chan struct{}
-	stopped           bool
+	stopped           atomic.Bool
 	isTainted         atomic.Bool
 
 	// Taint state
@@ -322,10 +322,11 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 		return
 	}
 
-	h.mu.Lock()
-	h.blockNumber = blockNumber
+	h.blockNumber.Store(blockNumber)
+	
+	h.mu.RLock()
 	callback := h.onBlockNumberUpdate
-	h.mu.Unlock()
+	h.mu.RUnlock()
 
 	if callback != nil {
 		callback(blockNumber)
@@ -364,12 +365,9 @@ func (h *HealthChecker) Start(c context.Context) {
 	for {
 		select {
 		case <-c.Done():
-			h.mu.Lock()
-			if !h.stopped {
+			if !h.stopped.Swap(true) {
 				close(h.stopCh)
-				h.stopped = true
 			}
-			h.mu.Unlock()
 			return
 		case <-timer.C:
 			h.CheckAndSetHealth()
@@ -387,12 +385,8 @@ func (h *HealthChecker) Start(c context.Context) {
 }
 
 func (h *HealthChecker) Stop(_ context.Context) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if !h.stopped {
+	if !h.stopped.Swap(true) {
 		close(h.stopCh)
-		h.stopped = true
 		// Signal cleanup of taint removal timer
 		select {
 		case h.taintRemoveCh <- struct{}{}:
@@ -487,8 +481,5 @@ func (h *HealthChecker) RemoveTaint() {
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	return h.blockNumber
+	return h.blockNumber.Load()
 }
