@@ -127,6 +127,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		},
 	}
 
+	healthchecker.taint.waitTime.Store(int64(healthCheckTaintConfig.InitialWaitTime))
+
 	healthchecker.config.Logger.Debug("Health checker created", 
 		"provider", config.Name, 
 		"url", config.URL,
