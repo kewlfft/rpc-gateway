@@ -123,7 +123,6 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		stopCh:     make(chan struct{}),
 		taintRemoveCh: make(chan struct{}, 1),
 		taint: TaintState{
-			waitTime: healthCheckTaintConfig.InitialWaitTime,
 			config:   healthCheckTaintConfig,
 		},
 	}
