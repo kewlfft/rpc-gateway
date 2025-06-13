@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 	"encoding/json"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -46,11 +47,10 @@ var (
 
 // TaintState represents the current state of a health checker
 type TaintState struct {
-	isTainted bool
 	lastRemoval time.Time
-	waitTime time.Duration
+	waitTime    time.Duration
 	removalTimer *time.Timer
-	config TaintConfig
+	config      TaintConfig
 }
 
 type HealthCheckerConfig struct {
@@ -87,6 +87,7 @@ type HealthChecker struct {
 	stopCh            chan struct{}
 	taintRemoveCh      chan struct{}
 	stopped           bool
+	isTainted         atomic.Bool
 
 	// Taint state
 	taint TaintState
@@ -402,24 +403,23 @@ func (h *HealthChecker) Stop(_ context.Context) error {
 }
 
 func (h *HealthChecker) IsHealthy() bool {
-	return !h.IsTainted()
+	return !h.isTainted.Load()
 }
 
 func (h *HealthChecker) IsTainted() bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.taint.isTainted
+	return h.isTainted.Load()
 }
 
 // Taint marks the provider as unhealthy for a configurable duration
 func (h *HealthChecker) Taint(cfg TaintConfig) {
-	now := time.Now()
+	// Phase 1: Immediate taint
+	h.isTainted.Store(true)
+	
+	// Phase 2: Setup removal timer and state
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.taint.isTainted {
-		return
-	}
+	now := time.Now()
 
 	// Determine new wait time
 	var wait time.Duration
@@ -437,19 +437,18 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		timer.Stop()
 	}
 
-	// Apply taint
+	// Update taint state
 	h.taint = TaintState{
-		isTainted:     true,
-		config:        cfg,
-		waitTime:      wait,
-		removalTimer:  time.AfterFunc(wait, func() {
+		lastRemoval: h.taint.lastRemoval, // preserve existing value
+		waitTime:    wait,
+		removalTimer: time.AfterFunc(wait, func() {
 			h.RemoveTaint()
 			select {
 			case h.taintRemoveCh <- struct{}{}:
 			default:
 			}
 		}),
-		lastRemoval: h.taint.lastRemoval, // preserve existing value
+		config: cfg,
 	}
 
 	h.config.Logger.Info("provider tainted",
@@ -461,6 +460,7 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		"next_retry", now.Add(wait),
 	)
 }
+
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
 func (h *HealthChecker) TaintHTTP() {
 	h.Taint(httpTaintConfig)
@@ -472,14 +472,10 @@ func (h *HealthChecker) TaintHealthCheck() {
 }
 
 func (h *HealthChecker) RemoveTaint() {
+	h.isTainted.Store(false)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	
-	if !h.taint.isTainted {
-		return
-	}
-
-	h.taint.isTainted = false
 	h.taint.lastRemoval = time.Now()
 	h.taint.removalTimer = nil
 	
