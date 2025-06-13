@@ -168,10 +168,6 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	}
 
 	r := chi.NewRouter()
-	// Only add request logger in DEBUG mode
-	if logLevel == slog.LevelDebug {
-		// Remove the request logging middleware
-	}
 
 	// Recoverer is a middleware that recovers from panics, logs the panic (and
 	// a backtrace), and returns a HTTP 500 (Internal Server Error) status if
@@ -183,24 +179,25 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		// Get the chain type for this proxy
 		chainType := p.GetChainType()
 
-		// Define a reusable handler constructor
-		handler := func(p http.Handler, stripPath bool) http.HandlerFunc {
+		// Define a reusable handler constructor with optimized path handling
+		handler := func(p http.Handler) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
+				// Fast path for WebSocket requests
 				if websocket.IsWebSocketUpgrade(r) {
 					p.ServeHTTP(w, r)
 					return
 				}
 
-				// For Tron chain type, preserve the full path to handle wallet/ endpoints
+				// Optimize path handling based on chain type
 				if chainType == "tron" {
-					// Remove the proxy path prefix from the URL path
-					r.URL.Path = strings.TrimPrefix(r.URL.Path, "/"+path)
-					if r.URL.Path == "" {
+					// Handle Tron chain paths
+					if path := strings.TrimPrefix(r.URL.Path, "/"+path); path != "" {
+						r.URL.Path = path
+					} else {
 						r.URL.Path = "/"
 					}
-				} else if stripPath {
-					// For non-Tron chains, we want to preserve the provider's path
-					// but strip any additional path components from the request
+				} else {
+					// Handle non-Tron chains
 					r.URL.Path = "/"
 				}
 
@@ -208,11 +205,11 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			}
 		}
 
-		r.Handle(fmt.Sprintf("/%s", path), handler(p, true))
-		r.Handle(fmt.Sprintf("/%s/", path), handler(p, true))
+		r.Handle(fmt.Sprintf("/%s", path), handler(p))
+		r.Handle(fmt.Sprintf("/%s/", path), handler(p))
 		// Add a catch-all route for Tron chain type to handle wallet/ endpoints
 		if chainType == "tron" {
-			r.Handle(fmt.Sprintf("/%s/*", path), handler(p, true))
+			r.Handle(fmt.Sprintf("/%s/*", path), handler(p))
 		}
 	}
 
