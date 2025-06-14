@@ -181,11 +181,6 @@ func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, s
 	)
 }
 
-// generateRequestID generates a unique request ID
-func generateRequestID() string {
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())
-}
-
 // forwardRequest handles both standard and Tron requests with direct streaming
 func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) bool {
 	name := target.Name()
