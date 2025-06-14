@@ -29,6 +29,8 @@ proxies:
         connection:
           http:
             url: "https://ethereum.publicnode.com"
+          websocket:
+            url: "wss://ethereum.publicnode.com"
 
   - path: "pol" # another proxy example
     timeout: "0.5s"

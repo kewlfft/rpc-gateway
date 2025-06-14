@@ -9,6 +9,8 @@ import (
 	"time"
 	"encoding/json"
 	"sync/atomic"
+	"strconv"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -141,49 +143,112 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 	var blockNumber uint64
 
 	switch {
-	case h.config.ChainType == "solana" && h.config.ConnectionType == "websocket":
+	case h.config.ConnectionType == "websocket":
 		conn, _, err := websocket.DefaultDialer.DialContext(ctx, h.config.URL, nil)
 		if err != nil {
-			h.config.Logger.Error("Solana WebSocket connection failed", "err", err)
+			h.config.Logger.Error("WebSocket connection failed", "err", err)
 			return 0, err
 		}
 		defer conn.Close()
 
-		// Subscribe
-		if err := conn.WriteJSON(map[string]any{
-			"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe",
-		}); err != nil {
-			return 0, fmt.Errorf("slotSubscribe failed: %w", err)
+		// Set a longer read deadline for WebSocket connections
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+		// Determine subscription method based on chain type
+		var subMethod, subParams, notificationMethod string
+		var parseBlock func(map[string]interface{}) (uint64, error)
+
+		if h.config.ChainType == "solana" {
+			subMethod = "slotSubscribe"
+			subParams = "[]"
+			notificationMethod = "slotNotification"
+			parseBlock = func(msg map[string]interface{}) (uint64, error) {
+				params, ok := msg["params"].(map[string]interface{})
+				if !ok {
+					return 0, fmt.Errorf("invalid params format")
+				}
+				result, ok := params["result"].(map[string]interface{})
+				if !ok {
+					return 0, fmt.Errorf("invalid result format")
+				}
+				slot, ok := result["slot"].(float64)
+				if !ok {
+					return 0, fmt.Errorf("invalid slot format")
+				}
+				return uint64(slot), nil
+			}
+		} else {
+			subMethod = "eth_subscribe"
+			subParams = `["newHeads"]`
+			notificationMethod = "eth_subscription"
+			parseBlock = func(msg map[string]interface{}) (uint64, error) {
+				params, ok := msg["params"].(map[string]interface{})
+				if !ok {
+					return 0, fmt.Errorf("invalid params format")
+				}
+				result, ok := params["result"].(map[string]interface{})
+				if !ok {
+					return 0, fmt.Errorf("invalid result format")
+				}
+				number, ok := result["number"].(string)
+				if !ok {
+					return 0, fmt.Errorf("invalid number format")
+				}
+				return strconv.ParseUint(strings.TrimPrefix(number, "0x"), 16, 64)
+			}
 		}
 
-		var subResp struct{ Result float64 }
+		// Subscribe
+		if err := conn.WriteJSON(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": subMethod, "params": json.RawMessage(subParams),
+		}); err != nil {
+			return 0, fmt.Errorf("%s failed: %w", subMethod, err)
+		}
+
+		// Read subscription response
+		var subResp struct{ Result interface{} }
 		if err := conn.ReadJSON(&subResp); err != nil {
 			return 0, fmt.Errorf("subscription response failed: %w", err)
 		}
-		subID := uint64(subResp.Result)
-		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		subID := subResp.Result
 
-		// Wait for slot notification
+		// Wait for notification with periodic deadline updates
+		deadline := time.Now().Add(10 * time.Second)
 		for {
-			var msg struct {
-				Method string `json:"method"`
-				Params struct {
-					Result struct{ Slot uint64 } `json:"result"`
-					Subscription uint64          `json:"subscription"`
-				} `json:"params"`
-			}
+			// Update read deadline before each read
+			conn.SetReadDeadline(deadline)
+
+			var msg map[string]interface{}
 			if err := conn.ReadJSON(&msg); err != nil {
-				return 0, fmt.Errorf("slot notification failed: %w", err)
+				if websocket.IsUnexpectedCloseError(err) {
+					return 0, fmt.Errorf("websocket closed unexpectedly: %w", err)
+				}
+				if err == websocket.ErrCloseSent {
+					return 0, fmt.Errorf("websocket close sent: %w", err)
+				}
+				return 0, fmt.Errorf("%s notification failed: %w", notificationMethod, err)
 			}
-			if msg.Method == "slotNotification" && msg.Params.Subscription == subID {
-				blockNumber = msg.Params.Result.Slot
+
+			method, ok := msg["method"].(string)
+			if !ok {
+				continue
+			}
+			if method == notificationMethod {
+				blockNumber, err = parseBlock(msg)
+				if err != nil {
+					return 0, fmt.Errorf("failed to parse block number: %w", err)
+				}
 				break
 			}
 		}
 
 		// Unsubscribe (optional cleanup)
+		unsubMethod := "slotUnsubscribe"
+		if h.config.ChainType != "solana" {
+			unsubMethod = "eth_unsubscribe"
+		}
 		_ = conn.WriteJSON(map[string]any{
-			"jsonrpc": "2.0", "id": 2, "method": "slotUnsubscribe", "params": []any{subID},
+			"jsonrpc": "2.0", "id": 2, "method": unsubMethod, "params": []any{subID},
 		})
 		_ = conn.ReadJSON(&map[string]any{}) // discard response
 
@@ -260,8 +325,8 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 // as blockNumber can be either cached or routed to a different service on the
 // RPC provider's side.
 func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
-	// Skip gas left check for non-EVM chains
-	if h.config.ChainType != "evm" {
+	// Skip gas left check for non-EVM chains or WebSocket connections
+	if h.config.ChainType != "evm" || h.config.ConnectionType == "websocket" {
 		return 0, nil
 	}
 
