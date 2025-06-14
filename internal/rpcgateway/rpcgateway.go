@@ -121,7 +121,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}))
 
 	// Create health check managers and proxies for each proxy config
-	for _, proxyConfig := range config.Proxies {
+	for i, proxyConfig := range config.Proxies {
 		timeout, err := time.ParseDuration(proxyConfig.Timeout)
 		if err != nil {
 			return nil, errors.Wrap(err, "invalid timeout")
@@ -136,6 +136,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			Targets:         proxyConfig.Targets,
 			Logger:          logger,
 			DisableHealthChecks: true, // Always disable health checks in NewProxy
+			PathIndex:       i, // Pass the path index for incremental staggering
 		}
 
 		// Create proxy

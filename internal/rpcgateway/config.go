@@ -5,17 +5,28 @@ import (
 	"github.com/kewlfft/rpc-gateway/internal/proxy"
 )
 
-type RPCGatewayConfig struct { //nolint:revive
-	Metrics            metrics.Config `yaml:"metrics"`
-	Port              string        `yaml:"port"`
-	RandomizeProviders bool         `yaml:"randomizeProviders"` // If true, providers will be randomized at startup
-	Proxies           []ProxyConfig `yaml:"proxies"`
+// RPCGatewayConfig defines the top-level configuration for the RPC gateway
+type RPCGatewayConfig struct {
+	// Metrics server configuration
+	Metrics metrics.Config `yaml:"metrics"`
+	// Port to listen on for RPC requests
+	Port string `yaml:"port"`
+	// If true, providers will be randomized at startup
+	RandomizeProviders bool `yaml:"randomizeProviders"`
+	// List of proxy configurations
+	Proxies []ProxyConfig `yaml:"proxies"`
 }
 
+// ProxyConfig defines the configuration for a single proxy instance
 type ProxyConfig struct {
-	Path            string                    `yaml:"path"`
-	ChainType       string                    `yaml:"chainType,omitempty"` // Default chain type for all targets in this proxy
-	Timeout         string                    `yaml:"timeout"`
-	HealthChecks    proxy.HealthCheckConfig   `yaml:"healthChecks"`
-	Targets         []proxy.NodeProviderConfig `yaml:"targets"`
+	// Path prefix for this proxy (e.g., "eth", "bsc")
+	Path string `yaml:"path"`
+	// Chain type (e.g., "evm", "solana", "tron")
+	ChainType string `yaml:"chainType,omitempty"`
+	// Request timeout for upstream calls
+	Timeout string `yaml:"timeout"`
+	// Health check configuration
+	HealthChecks proxy.HealthCheckConfig `yaml:"healthChecks"`
+	// List of RPC providers to use
+	Targets []proxy.NodeProviderConfig `yaml:"targets"`
 }

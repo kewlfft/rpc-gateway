@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -58,8 +57,8 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 		targets:  config.Targets,
 		logger:   config.Logger,
 		path:     config.Path,
-		// Set initial delay for this path
-		initialDelay: time.Duration(rand.Int63n(15000)) * time.Millisecond,
+		// Use incremental staggering
+		initialDelay: time.Duration(config.PathIndex * 500) * time.Millisecond,
 	}
 
 	for _, target := range config.Targets {

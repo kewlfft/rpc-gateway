@@ -9,7 +9,6 @@ import (
 	"time"
 	"encoding/json"
 	"sync/atomic"
-	"math/rand"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
