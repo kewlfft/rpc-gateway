@@ -55,24 +55,17 @@ type TaintState struct {
 }
 
 type HealthCheckerConfig struct {
-	URL            string
-	Path           string
-	ChainType      string
-	ConnectionType string
-	Logger         *slog.Logger
-	APIKey         string `yaml:"apiKey"`
-
-	// How often to check health.
-	Interval time.Duration `yaml:"healthcheckInterval"`
-
-	// How long to wait for responses before failing
-	Timeout time.Duration
-
-	// Maximum allowed block difference between providers
-	BlockDiffThreshold uint `yaml:"blockDiffThreshold"`
-
-	// Name of the provider
-	Name string
+	Logger           *slog.Logger
+	URL              string
+	Name             string
+	Interval         time.Duration
+	Timeout          time.Duration
+	Path             string
+	ChainType        string
+	ConnectionType   string
+	BlockDiffThreshold uint
+	APIKey           string
+	InitialDelay     time.Duration // Add initial delay to config
 }
 
 // BlockNumberUpdateCallback is called when a health checker successfully updates its block number
@@ -350,37 +343,39 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	}
 }
 
-func (h *HealthChecker) Start(ctx context.Context) {
-	// Stagger the first health check
-	initialDelay := time.Duration(rand.Int63n(9000)) * time.Millisecond
-	timer := time.NewTimer(initialDelay)
+func (h *HealthChecker) Start(c context.Context) {
+	// Use the provided initial delay from config
+	h.config.Logger.Debug("starting health checker with initial delay",
+		"initialDelayMs", h.config.InitialDelay.Milliseconds(),
+		"connectionType", h.config.ConnectionType,
+		"provider", h.config.Name,
+		"path", h.config.Path)
+	timer := time.NewTimer(h.config.InitialDelay)
 	defer timer.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-c.Done():
 			if !h.stopped.Swap(true) {
 				close(h.stopCh)
 			}
 			return
-
 		case <-timer.C:
+			// Do the first health check
 			h.CheckAndSetHealth()
-			// Instead of reusing the old timer (which is discouraged), create a new one
-			timer = time.NewTimer(h.config.Interval)
-
+			// Reset timer for regular interval
+			timer.Reset(h.config.Interval)
 		case <-h.taintRemoveCh:
+			// Clean up taint removal timer
 			h.mu.Lock()
-			timer := h.taint.removalTimer
-			h.taint.removalTimer = nil
-			h.mu.Unlock()
-			if timer != nil {
-				timer.Stop()
+			if h.taint.removalTimer != nil {
+				h.taint.removalTimer.Stop()
+				h.taint.removalTimer = nil
 			}
+			h.mu.Unlock()
 		}
 	}
 }
-
 
 func (h *HealthChecker) Stop(_ context.Context) error {
 	if !h.stopped.Swap(true) {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -42,6 +44,8 @@ type HealthCheckManager struct {
 	checkers []*HealthChecker
 	path     string
 	mu       sync.RWMutex
+	// Add initial delay for path-level staggering
+	initialDelay time.Duration
 }
 
 // NewHealthCheckManager creates a new health check manager
@@ -54,6 +58,8 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 		targets:  config.Targets,
 		logger:   config.Logger,
 		path:     config.Path,
+		// Set initial delay for this path
+		initialDelay: time.Duration(rand.Int63n(15000)) * time.Millisecond,
 	}
 
 	for _, target := range config.Targets {
@@ -87,6 +93,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				ConnectionType:  conn.connType,
 				BlockDiffThreshold: uint(config.HealthChecks.BlockDiffThreshold),
 				APIKey:            target.Connection.HTTP.APIKey,
+				InitialDelay:      hcm.initialDelay, // Pass the path-level initial delay
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed to create %s health checker for target %s: %w", conn.connType, target.Name, err)
