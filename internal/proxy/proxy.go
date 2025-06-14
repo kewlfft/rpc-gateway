@@ -60,6 +60,7 @@ type Proxy struct {
 	logger    *slog.Logger
 	targets   []*NodeProvider
 	chainType string
+	client    *http.Client
 }
 
 // Ensure Proxy implements ChainTypeHandler
@@ -85,6 +86,12 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		timeout:   config.Timeout,
 		logger:    config.Logger,
 		chainType: config.ChainType,
+		client: &http.Client{
+			Timeout: config.Timeout,
+			Transport: &http.Transport{
+				DisableCompression: false, // Enable compression
+			},
+		},
 	}
 
 	// Create providers for each target
@@ -270,27 +277,62 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // true: request was successfully proxied through the given target, response sent to client
 // false: request failed on that target (network error, bad response, etc.)
 func (p *Proxy) handleTronRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider) bool {
-	const walletPrefix = "/wallet/"
-	var method string
-
-	if strings.HasPrefix(r.URL.Path, walletPrefix) {
-		method = strings.TrimPrefix(r.URL.Path, walletPrefix)
-	} else {
-		var parsed map[string]any
-		if err := json.Unmarshal(body, &parsed); err != nil {
-			p.logger.Error("Tron handler: Invalid JSON detected, returning 400", "error", err)
-			p.writeErrorResponse(w, r, "Invalid JSON request", http.StatusBadRequest)
-			return true
-		}
-		m, ok := parsed["method"].(string)
-		if !ok {
-			p.writeErrorResponse(w, r, "Missing method in request", http.StatusBadRequest)
-			return true
-		}
-		method = strings.TrimPrefix(m, "wallet/")
+	// Extract method and prepare request body based on URL path
+	method, requestBody := p.extractMethodAndBody(r.URL.Path, body)
+	if method == "" {
+		return false
 	}
 
-	return p.forwardTronCall(w, r, start, target, method, body)
+	return p.forwardTronCall(w, r, start, target, method, requestBody)
+}
+
+func (p *Proxy) extractMethodAndBody(path string, body []byte) (string, []byte) {
+	// Fast path: REST-style wallet endpoint
+	switch {
+	case strings.HasPrefix(path, "/wallet/"):
+		return strings.TrimPrefix(path, "/wallet/"), body
+	case strings.HasPrefix(path, "/walletsolidity/"):
+		return strings.TrimPrefix(path, "/walletsolidity/"), body
+	}
+
+	// JSON-RPC request path
+	var parsed struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+		ID     json.RawMessage `json:"id"`
+	}
+
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		p.logger.Error("Tron handler: Invalid JSON", "error", err, "body", string(body))
+		return "", nil
+	}
+
+	if parsed.Method == "" {
+		p.logger.Error("Tron handler: Missing method", "body", string(body))
+		return "", nil
+	}
+
+	method := strings.TrimPrefix(parsed.Method, "wallet/")
+
+	// Wrap params if needed (ensure it's a valid JSON array)
+	params := parsed.Params
+	if len(params) > 0 && params[0] != '[' {
+		params = append([]byte("["), append(params, ']')...)
+	} else if len(params) == 0 {
+		params = []byte("[]")
+	}
+
+	// Construct canonical JSON-RPC request body without fmt.Sprintf
+	var buf bytes.Buffer
+	buf.WriteString(`{"jsonrpc":"2.0","method":"`)
+	buf.WriteString(method)
+	buf.WriteString(`","params":`)
+	buf.Write(params)
+	buf.WriteString(`,"id":`)
+	buf.Write(parsed.ID)
+	buf.WriteByte('}')
+
+	return method, buf.Bytes()
 }
 
 // forwardTronCall sends the request to healthy Tron targets.
@@ -298,13 +340,30 @@ func (p *Proxy) handleTronRequest(w http.ResponseWriter, r *http.Request, body [
 func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start time.Time, target *NodeProvider, method string, body []byte) bool {
 	name := target.Name()
 
-	url := target.config.Connection.HTTP.URL + "/wallet/" + method
+	// Determine the correct URL prefix based on the original request path
+	urlPrefix := "/wallet/"
+	if strings.HasPrefix(r.URL.Path, "/walletsolidity/") {
+		urlPrefix = "/walletsolidity/"
+	}
+
+	url := target.config.Connection.HTTP.URL + urlPrefix + method
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(body))
 	if err != nil {
+		p.logger.Error("Failed to create Tron request", "error", err)
 		return false
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	// Copy all headers from the original request
+	for k, v := range r.Header {
+		req.Header[k] = v
+	}
+
+	// Ensure content type is set
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	// Add API key header if configured
 	if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
 		req.Header.Set("TRON-PRO-API-KEY", apiKey)
 	}
@@ -314,26 +373,35 @@ func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start ti
 		req.URL.RawQuery = r.URL.RawQuery
 	}
 
-	resp, err := (&http.Client{Timeout: p.timeout}).Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
+		p.logger.Error("Tron request failed",
+			"error", err,
+			"url", url,
+			"method", method)
 		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
 		return false
 	}
 	defer resp.Body.Close()
 
-	bodyData, err := io.ReadAll(resp.Body)
-	if err != nil {
+	// Copy all headers from the response
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+
+	// Set status code
+	w.WriteHeader(resp.StatusCode)
+
+	// Stream the response body directly
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		p.logger.Error("Failed to stream Tron response",
+			"error", err,
+			"url", url,
+			"method", method)
 		p.handleProviderFailure(name, r, start, resp.StatusCode, err)
 		return false
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
-		return false
-	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(bodyData)
 	return true
 }
 
