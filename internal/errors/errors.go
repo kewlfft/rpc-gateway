@@ -26,7 +26,7 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"jsonrpc": "2.0",

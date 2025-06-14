@@ -384,3 +384,95 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 	require.Equal(t, "text/plain; charset=utf-8", rr.Header().Get("Content-Type"))
 	assert.Equal(t, []byte(`{"body": "content"}`), rr.Body.Bytes())
 }
+
+func TestTronProxyURLRedirection(t *testing.T) {
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+
+	var receivedPath, receivedMethod string
+	var receivedHeaders http.Header
+	fakeRPCServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedHeaders = r.Header
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+		if method, ok := req["method"].(string); ok {
+			receivedMethod = method
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"result":"test"}`))
+	}))
+	defer fakeRPCServer.Close()
+
+	rpcGatewayConfig := createConfig()
+	rpcGatewayConfig.ChainType = "tron"
+	rpcGatewayConfig.Targets = []NodeProviderConfig{
+		{
+			Name: "Server1",
+			Connection: struct {
+				HTTP struct {
+					URL    string `yaml:"url"`
+					APIKey string `yaml:"apiKey"`
+				} `yaml:"http"`
+				WebSocket struct {
+					URL string `yaml:"url"`
+				} `yaml:"websocket"`
+			}{HTTP: struct {
+				URL    string `yaml:"url"`
+				APIKey string `yaml:"apiKey"`
+			}{URL: fakeRPCServer.URL, APIKey: "test-api-key"}, WebSocket: struct{URL string `yaml:"url"`}{URL: ""}},
+		},
+	}
+	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	rpcGatewayConfig.DisableHealthChecks = true
+
+	proxy, err := NewProxy(context.Background(), rpcGatewayConfig)
+	assert.NoError(t, err)
+	assert.NotNil(t, proxy)
+
+	t.Run("path-based request", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodPost, "/wallet/getnowblock", bytes.NewReader([]byte(`{}`)))
+		assert.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		proxy.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "/wallet/getnowblock", receivedPath)
+		assert.Equal(t, "test-api-key", receivedHeaders.Get("TRON-PRO-API-KEY"))
+	})
+
+	t.Run("json-rpc method request", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"method":"wallet/getnowblock"}`)))
+		assert.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		proxy.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "/wallet/getnowblock", receivedPath)
+		assert.Equal(t, "wallet/getnowblock", receivedMethod)
+		assert.Equal(t, "test-api-key", receivedHeaders.Get("TRON-PRO-API-KEY"))
+	})
+
+	t.Run("invalid json request", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`invalid json`)))
+		assert.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		proxy.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
+		
+		// Parse the response body to check the error message
+		var response map[string]interface{}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		assert.NoError(t, err)
+		
+		// Check that the response contains the expected JSON-RPC error object
+		errorObj, ok := response["error"].(map[string]interface{})
+		assert.True(t, ok, "error field should be a map")
+		assert.Equal(t, float64(-32000), errorObj["code"])
+		assert.Equal(t, "Invalid JSON request", errorObj["message"])
+	})
+}

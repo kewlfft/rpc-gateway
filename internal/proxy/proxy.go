@@ -202,7 +202,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if p.chainType == "tron" {
 			if p.handleTronRequest(w, r, bodyBytes, start, target) {
-				p.logSuccessfulRequest(r, name, http.StatusOK, start)
 				return
 			}
 			continue
@@ -279,6 +278,7 @@ func (p *Proxy) handleTronRequest(w http.ResponseWriter, r *http.Request, body [
 	} else {
 		var parsed map[string]any
 		if err := json.Unmarshal(body, &parsed); err != nil {
+			p.logger.Error("Tron handler: Invalid JSON detected, returning 400", "error", err)
 			p.writeErrorResponse(w, r, "Invalid JSON request", http.StatusBadRequest)
 			return true
 		}
