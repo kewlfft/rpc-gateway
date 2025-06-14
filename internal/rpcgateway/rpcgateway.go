@@ -185,8 +185,8 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 						r.URL.Path = "/"
 					}
 				} else {
-					// Handle non-Tron chains
-					r.URL.Path = "/"
+					// For non-Tron chains, preserve the original path
+					r.URL.Path = strings.TrimPrefix(r.URL.Path, "/"+path)
 				}
 
 				// Forward the request with original method and query params

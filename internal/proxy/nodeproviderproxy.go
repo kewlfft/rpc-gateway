@@ -28,6 +28,8 @@ func newNodeProviderProxy(rawurl string, timeout time.Duration) (http.Handler, e
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		req.Host = target.Host
+		req.URL.Path = target.Path
+		req.URL.RawQuery = req.URL.RawQuery
 	}
 
 	return proxy, nil
