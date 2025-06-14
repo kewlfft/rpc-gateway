@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
-	"net/http/httptest"
-	"strconv"
 	"strings"
 	"time"
 
@@ -125,6 +123,22 @@ func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, messa
 	errors.WriteJSONRPCError(w, r, message, status)
 }
 
+// copyResponse copies headers, status code, and body from the source response to the target response writer
+func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
+	// Copy headers
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	// Stream the response body directly
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		return fmt.Errorf("failed to stream response: %w", err)
+	}
+
+	return nil
+}
+
 // handleProviderFailure handles provider failure by recording metrics, tainting the provider, and logging
 func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.Time, statusCode int, err error) {
 	durationMs := time.Since(start).Milliseconds()
@@ -215,57 +229,74 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Create a new request preserving the original method and query params
-		req := r.Clone(r.Context())
-		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		req.Method = r.Method // Preserve original method
-		req.URL.RawQuery = r.URL.RawQuery // Preserve query parameters
+		req, err := http.NewRequestWithContext(r.Context(), r.Method, target.config.Connection.HTTP.URL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			p.logger.Error("Failed to create request",
+				"error", err,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"provider_url", target.config.Connection.HTTP.URL)
+			p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
+			continue
+		}
 
-		rec := httptest.NewRecorder()
-		target.ServeHTTP(rec, req)
+		// Copy headers from original request
+		for k, v := range r.Header {
+			req.Header[k] = v
+		}
 
-		if err, ok := req.Context().Value("error").(error); ok {
-			status, _ := req.Context().Value("statusCode").(int)
+		// Ensure content type is set
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		// Add API key header if configured
+		if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
+			req.Header.Set("TRON-PRO-API-KEY", apiKey)
+		}
+
+		// Add query parameters to the request
+		if r.URL.RawQuery != "" {
+			req.URL.RawQuery = r.URL.RawQuery
+		}
+
+		// Use direct HTTP client call for minimal latency
+		resp, err := p.client.Do(req)
+		if err != nil {
 			p.logger.Error("provider request failed",
 				"provider", name,
-				"status", status,
 				"error", err,
 				"method", r.Method,
 				"path", r.URL.Path,
 				"request_body", string(bodyBytes),
 				"provider_url", target.config.Connection.HTTP.URL)
-			p.handleProviderFailure(name, r, start, status, err)
+			p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
 			continue
 		}
+		defer resp.Body.Close()
 
-		if p.HasNodeProviderFailed(rec.Code) {
+		if p.HasNodeProviderFailed(resp.StatusCode) {
 			p.logger.Error("provider returned error status",
 				"provider", name,
-				"status", rec.Code,
+				"status", resp.StatusCode,
 				"method", r.Method,
 				"path", r.URL.Path,
 				"request_body", string(bodyBytes),
 				"provider_url", target.config.Connection.HTTP.URL)
-			p.handleProviderFailure(name, r, start, rec.Code, nil)
+			p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
 			continue
 		}
 
-		for k, vals := range rec.Header() {
-			for _, v := range vals {
-				w.Header().Add(k, v)
-			}
+		if err := p.copyResponse(w, resp); err != nil {
+			p.logger.Error("Failed to copy response",
+				"error", err,
+				"method", r.Method,
+				"path", r.URL.Path)
+			p.handleProviderFailure(name, r, start, resp.StatusCode, err)
+			return
 		}
 
-		respBody := rec.Body.Bytes()
-		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
-		w.WriteHeader(rec.Code)
-		if len(respBody) > 0 {
-			if _, err := w.Write(respBody); err != nil {
-				p.writeErrorResponse(w, r, "Failed to write response", http.StatusInternalServerError)
-				return
-			}
-		}
-
-		p.logSuccessfulRequest(r, name, rec.Code, start)
+		p.logSuccessfulRequest(r, name, resp.StatusCode, start)
 		return
 	}
 
@@ -373,6 +404,7 @@ func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start ti
 		req.URL.RawQuery = r.URL.RawQuery
 	}
 
+	// Use direct HTTP client call for minimal latency
 	resp, err := p.client.Do(req)
 	if err != nil {
 		p.logger.Error("Tron request failed",
@@ -395,17 +427,8 @@ func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start ti
 		return false
 	}
 
-	// Copy all headers from the response
-	for k, v := range resp.Header {
-		w.Header()[k] = v
-	}
-
-	// Set status code
-	w.WriteHeader(resp.StatusCode)
-
-	// Stream the response body directly
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		p.logger.Error("Failed to stream Tron response",
+	if err := p.copyResponse(w, resp); err != nil {
+		p.logger.Error("Failed to copy Tron response",
 			"error", err,
 			"url", url,
 			"method", method)
