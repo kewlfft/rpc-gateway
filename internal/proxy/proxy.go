@@ -186,6 +186,79 @@ func generateRequestID() string {
 	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())
 }
 
+// forwardRequest handles both standard and Tron requests with direct streaming
+func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) bool {
+	name := target.Name()
+
+	// Create request with proper URL
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, urlPath, bytes.NewReader(body))
+	if err != nil {
+		p.logger.Error("Failed to create request",
+			"error", err,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"provider_url", urlPath)
+		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
+		return false
+	}
+
+	// Copy headers from original request
+	for k, v := range r.Header {
+		req.Header[k] = v
+	}
+
+	// Ensure content type is set
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	// Add API key header if configured
+	if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
+		req.Header.Set("TRON-PRO-API-KEY", apiKey)
+	}
+
+	// Add query parameters to the request
+	if r.URL.RawQuery != "" {
+		req.URL.RawQuery = r.URL.RawQuery
+	}
+
+	// Use direct HTTP client call for minimal latency
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.logger.Error("Request failed",
+			"error", err,
+			"url", urlPath,
+			"method", r.Method)
+		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Check for non-2xx status codes
+	if p.HasNodeProviderFailed(resp.StatusCode) {
+		p.logger.Error("Provider returned error status",
+			"provider", name,
+			"status", resp.StatusCode,
+			"method", r.Method,
+			"url", urlPath)
+		p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
+		return false
+	}
+
+	if err := p.copyResponse(w, resp); err != nil {
+		p.logger.Error("Failed to copy response",
+			"error", err,
+			"url", urlPath,
+			"method", r.Method)
+		p.handleProviderFailure(name, r, start, resp.StatusCode, err)
+		return false
+	}
+
+	p.logSuccessfulRequest(r, name, resp.StatusCode, start)
+	return true
+}
+
+// Update ServeHTTP to use the unified forwardRequest
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	isWebSocket := websocket.IsWebSocketUpgrade(r)
@@ -222,99 +295,32 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if p.chainType == "tron" {
-			if p.handleTronRequest(w, r, bodyBytes, start, target) {
+			// Extract method and prepare request body based on URL path
+			method, requestBody := p.extractMethodAndBody(r.URL.Path, bodyBytes)
+			if method == "" {
+				continue
+			}
+
+			// Determine the correct URL prefix based on the original request path
+			urlPrefix := "/wallet/"
+			if strings.HasPrefix(r.URL.Path, "/walletsolidity/") {
+				urlPrefix = "/walletsolidity/"
+			}
+
+			url := target.config.Connection.HTTP.URL + urlPrefix + method
+			if p.forwardRequest(w, r, requestBody, start, target, url) {
 				return
 			}
 			continue
 		}
 
-		// Create a new request preserving the original method and query params
-		req, err := http.NewRequestWithContext(r.Context(), r.Method, target.config.Connection.HTTP.URL, bytes.NewReader(bodyBytes))
-		if err != nil {
-			p.logger.Error("Failed to create request",
-				"error", err,
-				"method", r.Method,
-				"path", r.URL.Path,
-				"provider_url", target.config.Connection.HTTP.URL)
-			p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
-			continue
-		}
-
-		// Copy headers from original request
-		for k, v := range r.Header {
-			req.Header[k] = v
-		}
-
-		// Ensure content type is set
-		if req.Header.Get("Content-Type") == "" {
-			req.Header.Set("Content-Type", "application/json")
-		}
-
-		// Add API key header if configured
-		if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
-			req.Header.Set("TRON-PRO-API-KEY", apiKey)
-		}
-
-		// Add query parameters to the request
-		if r.URL.RawQuery != "" {
-			req.URL.RawQuery = r.URL.RawQuery
-		}
-
-		// Use direct HTTP client call for minimal latency
-		resp, err := p.client.Do(req)
-		if err != nil {
-			p.logger.Error("provider request failed",
-				"provider", name,
-				"error", err,
-				"method", r.Method,
-				"path", r.URL.Path,
-				"request_body", string(bodyBytes),
-				"provider_url", target.config.Connection.HTTP.URL)
-			p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
-			continue
-		}
-		defer resp.Body.Close()
-
-		if p.HasNodeProviderFailed(resp.StatusCode) {
-			p.logger.Error("provider returned error status",
-				"provider", name,
-				"status", resp.StatusCode,
-				"method", r.Method,
-				"path", r.URL.Path,
-				"request_body", string(bodyBytes),
-				"provider_url", target.config.Connection.HTTP.URL)
-			p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
-			continue
-		}
-
-		if err := p.copyResponse(w, resp); err != nil {
-			p.logger.Error("Failed to copy response",
-				"error", err,
-				"method", r.Method,
-				"path", r.URL.Path)
-			p.handleProviderFailure(name, r, start, resp.StatusCode, err)
+		// Standard HTTP request
+		if p.forwardRequest(w, r, bodyBytes, start, target, target.config.Connection.HTTP.URL) {
 			return
 		}
-
-		p.logSuccessfulRequest(r, name, resp.StatusCode, start)
-		return
 	}
 
 	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
-}
-
-// handleTronRequest handles Tron-specific HTTP forwarding logic.
-// Returns:
-// true: request was successfully proxied through the given target, response sent to client
-// false: request failed on that target (network error, bad response, etc.)
-func (p *Proxy) handleTronRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider) bool {
-	// Extract method and prepare request body based on URL path
-	method, requestBody := p.extractMethodAndBody(r.URL.Path, body)
-	if method == "" {
-		return false
-	}
-
-	return p.forwardTronCall(w, r, start, target, method, requestBody)
 }
 
 func (p *Proxy) extractMethodAndBody(path string, body []byte) (string, []byte) {
@@ -364,80 +370,6 @@ func (p *Proxy) extractMethodAndBody(path string, body []byte) (string, []byte) 
 	buf.WriteByte('}')
 
 	return method, buf.Bytes()
-}
-
-// forwardTronCall sends the request to healthy Tron targets.
-// Returns true if request was handled, false if all providers failed.
-func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start time.Time, target *NodeProvider, method string, body []byte) bool {
-	name := target.Name()
-
-	// Determine the correct URL prefix based on the original request path
-	urlPrefix := "/wallet/"
-	if strings.HasPrefix(r.URL.Path, "/walletsolidity/") {
-		urlPrefix = "/walletsolidity/"
-	}
-
-	url := target.config.Connection.HTTP.URL + urlPrefix + method
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(body))
-	if err != nil {
-		p.logger.Error("Failed to create Tron request", "error", err)
-		return false
-	}
-
-	// Copy all headers from the original request
-	for k, v := range r.Header {
-		req.Header[k] = v
-	}
-
-	// Ensure content type is set
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	// Add API key header if configured
-	if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
-		req.Header.Set("TRON-PRO-API-KEY", apiKey)
-	}
-
-	// Add query parameters to the request
-	if r.URL.RawQuery != "" {
-		req.URL.RawQuery = r.URL.RawQuery
-	}
-
-	// Use direct HTTP client call for minimal latency
-	resp, err := p.client.Do(req)
-	if err != nil {
-		p.logger.Error("Tron request failed",
-			"error", err,
-			"url", url,
-			"method", method)
-		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	// Check for non-2xx status codes
-	if p.HasNodeProviderFailed(resp.StatusCode) {
-		p.logger.Error("Tron provider returned error status",
-			"provider", name,
-			"status", resp.StatusCode,
-			"method", method,
-			"url", url)
-		p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
-		return false
-	}
-
-	if err := p.copyResponse(w, resp); err != nil {
-		p.logger.Error("Failed to copy Tron response",
-			"error", err,
-			"url", url,
-			"method", method)
-		p.handleProviderFailure(name, r, start, resp.StatusCode, err)
-		return false
-	}
-
-	p.logSuccessfulRequest(r, name, resp.StatusCode, start)
-	return true
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy
