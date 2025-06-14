@@ -87,7 +87,7 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		client: &http.Client{
 			Timeout: config.Timeout,
 			Transport: &http.Transport{
-				DisableCompression: false, // Enable compression
+				DisableCompression: true, // Prevent auto-decompression so we can forward gzip as-is
 			},
 		},
 	}
@@ -129,6 +129,17 @@ func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 	for k, v := range resp.Header {
 		w.Header()[k] = v
 	}
+
+	// Ensure Content-Encoding header is preserved
+	if resp.Header.Get("Content-Encoding") != "" {
+		w.Header().Set("Content-Encoding", resp.Header.Get("Content-Encoding"))
+	}
+
+	// Ensure Content-Type header is preserved
+	if resp.Header.Get("Content-Type") != "" {
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	}
+
 	w.WriteHeader(resp.StatusCode)
 
 	// Stream the response body directly
@@ -293,6 +304,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Extract method and prepare request body based on URL path
 			method, requestBody := p.extractMethodAndBody(r.URL.Path, bodyBytes)
 			if method == "" {
+				// For Tron chain type, return a proper JSON-RPC error for invalid requests
+				if r.URL.Path == "/" {
+					p.writeErrorResponse(w, r, "Invalid JSON request", http.StatusBadRequest)
+					return
+				}
 				continue
 			}
 
@@ -344,7 +360,13 @@ func (p *Proxy) extractMethodAndBody(path string, body []byte) (string, []byte) 
 		return "", nil
 	}
 
-	method := strings.TrimPrefix(parsed.Method, "wallet/")
+	// Determine the URL method (strip prefix), but keep the original method for the JSON-RPC body
+	urlMethod := parsed.Method
+	if strings.HasPrefix(urlMethod, "wallet/") {
+		urlMethod = strings.TrimPrefix(urlMethod, "wallet/")
+	} else if strings.HasPrefix(urlMethod, "walletsolidity/") {
+		urlMethod = strings.TrimPrefix(urlMethod, "walletsolidity/")
+	}
 
 	// Wrap params if needed (ensure it's a valid JSON array)
 	params := parsed.Params
@@ -354,17 +376,16 @@ func (p *Proxy) extractMethodAndBody(path string, body []byte) (string, []byte) 
 		params = []byte("[]")
 	}
 
-	// Construct canonical JSON-RPC request body without fmt.Sprintf
-	var buf bytes.Buffer
-	buf.WriteString(`{"jsonrpc":"2.0","method":"`)
-	buf.WriteString(method)
-	buf.WriteString(`","params":`)
-	buf.Write(params)
-	buf.WriteString(`,"id":`)
-	buf.Write(parsed.ID)
-	buf.WriteByte('}')
-
-	return method, buf.Bytes()
+	// Construct the canonical JSON-RPC request body
+	buf := new(bytes.Buffer)
+	json.NewEncoder(buf).Encode(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  parsed.Method,
+		"params":  params,
+		"id":      nil,
+	})
+	p.logger.Debug("JSON-RPC body sent by proxy", "body", buf.String())
+	return urlMethod, buf.Bytes()
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy

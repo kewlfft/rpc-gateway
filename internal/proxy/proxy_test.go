@@ -170,6 +170,10 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 	handler := http.HandlerFunc(httpFailoverProxy.ServeHTTP)
 	handler.ServeHTTP(rr, req)
 
+	// Verify response headers
+	assert.Equal(t, "gzip", rr.Header().Get("Content-Encoding"))
+	assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+
 	// Decompress the response body before comparing
 	reader, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
 	if err != nil {
@@ -398,6 +402,8 @@ func TestTronProxyURLRedirection(t *testing.T) {
 		_ = json.Unmarshal(body, &req)
 		if method, ok := req["method"].(string); ok {
 			receivedMethod = method
+		} else {
+			receivedMethod = ""
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"result":"test"}`))
