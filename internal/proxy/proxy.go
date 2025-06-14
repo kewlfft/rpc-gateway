@@ -128,16 +128,6 @@ func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 		w.Header()[k] = v
 	}
 
-	// Ensure Content-Encoding header is preserved
-	if resp.Header.Get("Content-Encoding") != "" {
-		w.Header().Set("Content-Encoding", resp.Header.Get("Content-Encoding"))
-	}
-
-	// Ensure Content-Type header is preserved
-	if resp.Header.Get("Content-Type") != "" {
-		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-	}
-
 	w.WriteHeader(resp.StatusCode)
 
 	// Stream the response body directly
@@ -209,11 +199,6 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 	// Copy headers from original request
 	for k, v := range r.Header {
 		req.Header[k] = v
-	}
-
-	// Ensure content type is set
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
 	}
 
 	// Add API key header if configured
