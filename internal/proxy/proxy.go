@@ -343,49 +343,31 @@ func (p *Proxy) extractMethodAndBody(path string, body []byte) (string, []byte) 
 		return strings.TrimPrefix(path, "/walletsolidity/"), body
 	}
 
-	// JSON-RPC request path
+	// For JSON-RPC requests, just extract the method for URL routing
 	var parsed struct {
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-		ID     json.RawMessage `json:"id"`
+		Method string `json:"method"`
 	}
 
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		p.logger.Error("Tron handler: Invalid JSON", "error", err, "body", string(body))
+		p.logger.Error("Invalid JSON", "error", err, "body", string(body))
 		return "", nil
 	}
 
 	if parsed.Method == "" {
-		p.logger.Error("Tron handler: Missing method", "body", string(body))
+		p.logger.Error("Missing method", "body", string(body))
 		return "", nil
 	}
 
-	// Determine the URL method (strip prefix), but keep the original method for the JSON-RPC body
-	urlMethod := parsed.Method
-	if strings.HasPrefix(urlMethod, "wallet/") {
-		urlMethod = strings.TrimPrefix(urlMethod, "wallet/")
-	} else if strings.HasPrefix(urlMethod, "walletsolidity/") {
-		urlMethod = strings.TrimPrefix(urlMethod, "walletsolidity/")
+	// Strip wallet/ or walletsolidity/ prefix from the method for URL routing
+	method := parsed.Method
+	if strings.HasPrefix(method, "wallet/") {
+		method = strings.TrimPrefix(method, "wallet/")
+	} else if strings.HasPrefix(method, "walletsolidity/") {
+		method = strings.TrimPrefix(method, "walletsolidity/")
 	}
 
-	// Wrap params if needed (ensure it's a valid JSON array)
-	params := parsed.Params
-	if len(params) > 0 && params[0] != '[' {
-		params = append([]byte("["), append(params, ']')...)
-	} else if len(params) == 0 {
-		params = []byte("[]")
-	}
-
-	// Construct the canonical JSON-RPC request body
-	buf := new(bytes.Buffer)
-	json.NewEncoder(buf).Encode(map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  parsed.Method,
-		"params":  params,
-		"id":      parsed.ID,
-	})
-	p.logger.Debug("JSON-RPC body sent by proxy", "body", buf.String())
-	return urlMethod, buf.Bytes()
+	// Return the stripped method for URL routing and the original body
+	return method, body
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy
