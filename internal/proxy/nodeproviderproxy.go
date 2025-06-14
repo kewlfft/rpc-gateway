@@ -13,8 +13,9 @@ func newNodeProviderProxy(rawurl string, timeout time.Duration) (http.Handler, e
 		return nil, err
 	}
 
-	// High-performance transport config
-	transport := &http.Transport{
+	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	proxy.Transport = &http.Transport{
 		MaxIdleConns:          1024,
 		MaxIdleConnsPerHost:   256,
 		IdleConnTimeout:       90 * time.Second,
@@ -22,9 +23,6 @@ func newNodeProviderProxy(rawurl string, timeout time.Duration) (http.Handler, e
 		DisableCompression:    true, // Disable if your RPC traffic is already fast or uncompressed
 		ForceAttemptHTTP2:     true,
 	}
-
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = transport
 
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
