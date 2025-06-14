@@ -384,6 +384,17 @@ func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start ti
 	}
 	defer resp.Body.Close()
 
+	// Check for non-2xx status codes
+	if p.HasNodeProviderFailed(resp.StatusCode) {
+		p.logger.Error("Tron provider returned error status",
+			"provider", name,
+			"status", resp.StatusCode,
+			"method", method,
+			"url", url)
+		p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
+		return false
+	}
+
 	// Copy all headers from the response
 	for k, v := range resp.Header {
 		w.Header()[k] = v
@@ -402,6 +413,7 @@ func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start ti
 		return false
 	}
 
+	p.logSuccessfulRequest(r, name, resp.StatusCode, start)
 	return true
 }
 
