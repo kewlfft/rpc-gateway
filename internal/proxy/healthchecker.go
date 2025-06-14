@@ -350,36 +350,37 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	}
 }
 
-func (h *HealthChecker) Start(c context.Context) {
-	// Create a timer that will fire when we should do the first check
-	// Use a random delay to stagger first checks
+func (h *HealthChecker) Start(ctx context.Context) {
+	// Stagger the first health check
 	initialDelay := time.Duration(rand.Int63n(9000)) * time.Millisecond
 	timer := time.NewTimer(initialDelay)
 	defer timer.Stop()
 
 	for {
 		select {
-		case <-c.Done():
+		case <-ctx.Done():
 			if !h.stopped.Swap(true) {
 				close(h.stopCh)
 			}
 			return
+
 		case <-timer.C:
-			// Do the first health check
 			h.CheckAndSetHealth()
-			// Reset timer for regular interval
-			timer.Reset(h.config.Interval)
+			// Instead of reusing the old timer (which is discouraged), create a new one
+			timer = time.NewTimer(h.config.Interval)
+
 		case <-h.taintRemoveCh:
-			// Clean up taint removal timer
 			h.mu.Lock()
-			if h.taint.removalTimer != nil {
-				h.taint.removalTimer.Stop()
-				h.taint.removalTimer = nil
-			}
+			timer := h.taint.removalTimer
+			h.taint.removalTimer = nil
 			h.mu.Unlock()
+			if timer != nil {
+				timer.Stop()
+			}
 		}
 	}
 }
+
 
 func (h *HealthChecker) Stop(_ context.Context) error {
 	if !h.stopped.Swap(true) {
