@@ -382,7 +382,7 @@ func (p *Proxy) extractMethodAndBody(path string, body []byte) (string, []byte) 
 		"jsonrpc": "2.0",
 		"method":  parsed.Method,
 		"params":  params,
-		"id":      nil,
+		"id":      parsed.ID,
 	})
 	p.logger.Debug("JSON-RPC body sent by proxy", "body", buf.String())
 	return urlMethod, buf.Bytes()
