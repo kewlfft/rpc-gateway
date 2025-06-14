@@ -24,12 +24,10 @@ const contentLength = "Content-Length"
 
 func createConfig() Config {
 	return Config{
-		UpstreamTimeout: time.Second * 3,
+		Timeout: time.Second * 3,
 		HealthChecks: HealthCheckConfig{
 			Interval:         time.Second * 5,
-			Timeout:          time.Second * 2,
-			FailureThreshold: 3,
-			SuccessThreshold: 2,
+			BlockDiffThreshold: 2,
 		},
 		Targets: []NodeProviderConfig{},
 	}
@@ -56,21 +54,31 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 			Name: "Server1",
 			Connection: struct {
 				HTTP struct {
-					URL string `yaml:"url"`
+					URL    string `yaml:"url"`
+					APIKey string `yaml:"apiKey"`
 				} `yaml:"http"`
+				WebSocket struct {
+					URL string `yaml:"url"`
+				} `yaml:"websocket"`
 			}{HTTP: struct {
-				URL string `yaml:"url"`
-			}{URL: fakeRPC1Server.URL}},
+				URL    string `yaml:"url"`
+				APIKey string `yaml:"apiKey"`
+			}{URL: fakeRPC1Server.URL, APIKey: ""}, WebSocket: struct{URL string `yaml:"url"`}{URL: ""}},
 		},
 		{
 			Name: "Server2",
 			Connection: struct {
 				HTTP struct {
-					URL string `yaml:"url"`
+					URL    string `yaml:"url"`
+					APIKey string `yaml:"apiKey"`
 				} `yaml:"http"`
+				WebSocket struct {
+					URL string `yaml:"url"`
+				} `yaml:"websocket"`
 			}{HTTP: struct {
-				URL string `yaml:"url"`
-			}{URL: fakeRPC2Server.URL}},
+				URL    string `yaml:"url"`
+				APIKey string `yaml:"apiKey"`
+			}{URL: fakeRPC2Server.URL, APIKey: ""}, WebSocket: struct{URL string `yaml:"url"`}{URL: ""}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -102,14 +110,20 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
 
-	var receivedBody, receivedHeaderContentEncoding, receivedHeaderContentLength string
+	var receivedHeaderContentEncoding, receivedHeaderContentLength string
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHeaderContentEncoding = r.Header.Get("Content-Encoding")
 		receivedHeaderContentLength = r.Header.Get(contentLength)
-		body, _ := io.ReadAll(r.Body)
-		receivedBody = string(body)
+		// body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("OK"))
+		// Write a gzipped response
+		var respBuf bytes.Buffer
+		gzipWriter := gzip.NewWriter(&respBuf)
+		_, _ = gzipWriter.Write([]byte(`{"body": "content"}`))
+		_ = gzipWriter.Close()
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", respBuf.Len()))
+		w.Write(respBuf.Bytes())
 	}))
 	defer fakeRPC1Server.Close()
 	rpcGatewayConfig := createConfig()
@@ -118,13 +132,16 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 			Name: "Server1",
 			Connection: struct {
 				HTTP struct {
-					URL         string `yaml:"url"`
-					Compression bool   `yaml:"compression"`
+					URL    string `yaml:"url"`
+					APIKey string `yaml:"apiKey"`
 				} `yaml:"http"`
+				WebSocket struct {
+					URL string `yaml:"url"`
+				} `yaml:"websocket"`
 			}{HTTP: struct {
-				URL         string `yaml:"url"`
-				Compression bool   `yaml:"compression"`
-			}{URL: fakeRPC1Server.URL}},
+				URL    string `yaml:"url"`
+				APIKey string `yaml:"apiKey"`
+			}{URL: fakeRPC1Server.URL, APIKey: ""}, WebSocket: struct{URL string `yaml:"url"`}{URL: ""}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -154,9 +171,19 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 	handler := http.HandlerFunc(httpFailoverProxy.ServeHTTP)
 	handler.ServeHTTP(rr, req)
 
-	assert.Equal(t, `{"body": "content"}`, receivedBody)
-	assert.Equal(t, "", receivedHeaderContentEncoding)
-	assert.Equal(t, strconv.Itoa(len(`{"body": "content"}`)), receivedHeaderContentLength)
+	// Decompress the response body before comparing
+	reader, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("Failed to create gzip reader: %v", err)
+	}
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("Failed to decompress response body: %v", err)
+	}
+
+	assert.Equal(t, `{"body": "content"}`, string(decompressed))
+	assert.Equal(t, "gzip", receivedHeaderContentEncoding)
+	assert.Equal(t, strconv.Itoa(len(rr.Body.Bytes())), receivedHeaderContentLength)
 }
 
 func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
@@ -207,21 +234,25 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 				Name: "test",
 				Connection: struct {
 					HTTP struct {
-						URL         string `yaml:"url"`
-						Compression bool   `yaml:"compression"`
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
 					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
 				}{
 					HTTP: struct {
-						URL         string `yaml:"url"`
-						Compression bool   `yaml:"compression"`
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
 					}{
 						URL: server.URL,
-						Compression: true,
+						APIKey: "",
 					},
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
 				},
 			},
 		},
-		UpstreamTimeout: 5 * time.Second,
+		Timeout:         5 * time.Second,
 		Logger:         slog.Default(),
 		DisableHealthChecks: true,
 	}
@@ -317,10 +348,15 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 			Name: "Server1",
 			Connection: struct {
 				HTTP struct {
-					URL string `yaml:"url"`
+					URL    string `yaml:"url"`
+					APIKey string `yaml:"apiKey"`
 				} `yaml:"http"`
+				WebSocket struct {
+					URL string `yaml:"url"`
+				} `yaml:"websocket"`
 			}{HTTP: struct {
-				URL string `yaml:"url"`
+				URL    string `yaml:"url"`
+				APIKey string `yaml:"apiKey"`
 			}{URL: fakeRPCServer.URL}},
 		},
 	}

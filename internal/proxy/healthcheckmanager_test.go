@@ -9,40 +9,40 @@ import (
 )
 
 func TestBlockLagAndTaint(t *testing.T) {
-	// Create test health checkers
-	hc1, err := NewHealthChecker(HealthCheckerConfig{
-		URL:    "http://test1",
-		Name:   "test1",
-		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	})
-	assert.NoError(t, err)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	hc2, err := NewHealthChecker(HealthCheckerConfig{
-		URL:    "http://test2",
-		Name:   "test2",
-		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
-	})
-	assert.NoError(t, err)
+	// Create two health checkers
+	hc1, _ := NewHealthChecker(HealthCheckerConfig{URL: "http://test1", Name: "test1", Logger: logger})
+	hc2, _ := NewHealthChecker(HealthCheckerConfig{URL: "http://test2", Name: "test2", Logger: logger})
 
-	// Test case 1: No lag, no taint
-	hc1.blockNumber = 100
-	hc2.blockNumber = 100
+	// Helper to set block numbers
+	setBlocks := func(b1, b2 uint64) {
+		hc1.blockNumber.Store(b1)
+		hc2.blockNumber.Store(b2)
+		hc1.RemoveTaint()
+		hc2.RemoveTaint()
+	}
+
+	// Case 1: No lag, no taint
+	setBlocks(100, 100)
 	assert.False(t, hc1.IsTainted())
 	assert.False(t, hc2.IsTainted())
 
-	// Test case 2: Lag exceeds threshold, should taint
-	hc1.blockNumber = 100
-	hc2.blockNumber = 103
-	hc1.TaintHealthCheck()
-	assert.True(t, hc1.IsTainted(), "Provider should be tainted when block difference exceeds threshold")
+	// Case 2: Lag exceeds threshold, should taint
+	setBlocks(100, 103)
+	threshold := uint64(2)
+	maxBlock := hc2.BlockNumber()
+	if maxBlock-hc1.BlockNumber() > threshold {
+		hc1.TaintHealthCheck()
+	}
+	assert.True(t, hc1.IsTainted())
 	assert.False(t, hc2.IsTainted())
 
-	// Reset taint for next test
-	hc1.RemoveTaint()
-
-	// Test case 3: Lag within threshold, no taint
-	hc1.blockNumber = 100
-	hc2.blockNumber = 101
-	assert.False(t, hc1.IsTainted(), "Provider should not be tainted when block difference is within threshold")
+	// Case 3: Lag within threshold, no taint
+	setBlocks(100, 101)
+	if hc2.BlockNumber()-hc1.BlockNumber() > threshold {
+		hc1.TaintHealthCheck()
+	}
+	assert.False(t, hc1.IsTainted())
 	assert.False(t, hc2.IsTainted())
 } 

@@ -227,12 +227,12 @@ func TestHealthCheckerTaintHTTP(t *testing.T) {
 
 	// Test multiple HTTP taints with exponential backoff
 	healthchecker.TaintHTTP()
-	firstWaitTime := healthchecker.taint.waitTime
+	firstWaitTime := healthchecker.taint.waitTime.Load()
 	healthchecker.RemoveTaint()
 
 	// Taint again within reset period
 	healthchecker.TaintHTTP()
-	secondWaitTime := healthchecker.taint.waitTime
+	secondWaitTime := healthchecker.taint.waitTime.Load()
 	assert.Greater(t, secondWaitTime, firstWaitTime)
 
 	// Test max wait time
@@ -241,6 +241,6 @@ func TestHealthCheckerTaintHTTP(t *testing.T) {
 		healthchecker.RemoveTaint()
 	}
 	healthchecker.TaintHTTP()
-	finalWaitTime := healthchecker.taint.waitTime
-	assert.LessOrEqual(t, finalWaitTime, httpTaintConfig.MaxWaitTime)
+	finalWaitTime := healthchecker.taint.waitTime.Load()
+	assert.LessOrEqual(t, finalWaitTime, int64(httpTaintConfig.MaxWaitTime))
 }
