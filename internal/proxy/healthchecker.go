@@ -213,7 +213,7 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		subID := subResp.Result
 
 		// Wait for notification with periodic deadline updates
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(45 * time.Second)
 		for {
 			// Update read deadline before each read
 			conn.SetReadDeadline(deadline)
