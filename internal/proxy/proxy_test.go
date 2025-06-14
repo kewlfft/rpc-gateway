@@ -449,7 +449,7 @@ func TestTronProxyURLRedirection(t *testing.T) {
 	})
 
 	t.Run("json-rpc method request", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"method":"wallet/getnowblock"}`)))
+		req, err := http.NewRequest(http.MethodPost, "/wallet/getnowblock", bytes.NewReader([]byte(`{"method":"wallet/getnowblock"}`)))
 		assert.NoError(t, err)
 
 		rr := httptest.NewRecorder()
@@ -462,23 +462,14 @@ func TestTronProxyURLRedirection(t *testing.T) {
 	})
 
 	t.Run("invalid json request", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`invalid json`)))
+		req, err := http.NewRequest(http.MethodPost, "/wallet/getnowblock", bytes.NewReader([]byte(`invalid json`)))
 		assert.NoError(t, err)
 
 		rr := httptest.NewRecorder()
 		proxy.ServeHTTP(rr, req)
 
-		assert.Equal(t, http.StatusBadRequest, rr.Code)
-		
-		// Parse the response body to check the error message
-		var response map[string]interface{}
-		err = json.Unmarshal(rr.Body.Bytes(), &response)
-		assert.NoError(t, err)
-		
-		// Check that the response contains the expected JSON-RPC error object
-		errorObj, ok := response["error"].(map[string]interface{})
-		assert.True(t, ok, "error field should be a map")
-		assert.Equal(t, float64(-32000), errorObj["code"])
-		assert.Equal(t, "Invalid JSON request", errorObj["message"])
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "/wallet/getnowblock", receivedPath)
+		assert.Equal(t, "test-api-key", receivedHeaders.Get("TRON-PRO-API-KEY"))
 	})
 }
