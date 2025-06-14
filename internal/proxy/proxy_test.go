@@ -114,7 +114,6 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHeaderContentEncoding = r.Header.Get("Content-Encoding")
 		receivedHeaderContentLength = r.Header.Get(contentLength)
-		// body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		// Write a gzipped response
 		var respBuf bytes.Buffer
