@@ -9,6 +9,7 @@ import (
 	"time"
 	"encoding/json"
 	"sync/atomic"
+	"math/rand"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -350,11 +351,10 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 }
 
 func (h *HealthChecker) Start(c context.Context) {
-	// Do an immediate health check on startup
-	h.CheckAndSetHealth()
-
-	// Create a timer that will fire when we should do the next check
-	timer := time.NewTimer(h.config.Interval)
+	// Create a timer that will fire when we should do the first check
+	// Use a random delay to stagger first checks
+	initialDelay := time.Duration(rand.Int63n(9000)) * time.Millisecond
+	timer := time.NewTimer(initialDelay)
 	defer timer.Stop()
 
 	for {
@@ -365,7 +365,9 @@ func (h *HealthChecker) Start(c context.Context) {
 			}
 			return
 		case <-timer.C:
+			// Do the first health check
 			h.CheckAndSetHealth()
+			// Reset timer for regular interval
 			timer.Reset(h.config.Interval)
 		case <-h.taintRemoveCh:
 			// Clean up taint removal timer

@@ -39,25 +39,21 @@ func (r *RPCGateway) Start(c context.Context) error {
 		return errors.Wrap(err, "metrics port not available")
 	}
 
-	// Start health check managers with staggered starts
-	// This prevents concurrent health checks to the same provider domain across different paths
+	// Start all health check managers (Start is non-blocking)
 	for path, hcm := range r.hcms {
-		// Add a small delay between each path's health check start
-		// This helps prevent rate limiting from providers that are used across multiple paths
-		time.Sleep(300 * time.Millisecond)
 		if err := hcm.Start(c); err != nil {
-			return errors.Wrapf(err, "failed to start health check manager for path %s", path)
+			slog.Error("failed to start health check manager", "path", path, "error", err)
 		}
 	}
 
-	// Start metrics server in a goroutine
+	// Start metrics server
 	go func() {
 		if err := r.metrics.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("metrics server error", "error", err)
 		}
 	}()
 
-	// Start main server in a goroutine
+	// Start main server
 	go func() {
 		if err := r.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("rpc-gateway server error", "error", err)
