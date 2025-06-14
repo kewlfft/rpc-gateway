@@ -189,6 +189,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 					r.URL.Path = "/"
 				}
 
+				// Forward the request with original method and query params
 				p.ServeHTTP(w, r)
 			}
 		}

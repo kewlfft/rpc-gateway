@@ -208,8 +208,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Create a new request preserving the original method and query params
 		req := r.Clone(r.Context())
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.Method = r.Method // Preserve original method
+		req.URL.RawQuery = r.URL.RawQuery // Preserve query parameters
 
 		rec := httptest.NewRecorder()
 		target.ServeHTTP(rec, req)
@@ -296,7 +299,7 @@ func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start ti
 	name := target.Name()
 
 	url := target.config.Connection.HTTP.URL + "/wallet/" + method
-	req, err := http.NewRequestWithContext(r.Context(), "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(body))
 	if err != nil {
 		return false
 	}
@@ -304,6 +307,11 @@ func (p *Proxy) forwardTronCall(w http.ResponseWriter, r *http.Request, start ti
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
 		req.Header.Set("TRON-PRO-API-KEY", apiKey)
+	}
+
+	// Add query parameters to the request
+	if r.URL.RawQuery != "" {
+		req.URL.RawQuery = r.URL.RawQuery
 	}
 
 	resp, err := (&http.Client{Timeout: p.timeout}).Do(req)
