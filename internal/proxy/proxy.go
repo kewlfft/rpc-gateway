@@ -3,13 +3,11 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/errors"
@@ -300,74 +298,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		url := target.config.Connection.HTTP.URL
 		if p.chainType == "tron" {
-			// Extract method and prepare request body based on URL path
-			method, requestBody := p.extractMethodAndBody(r.URL.Path, bodyBytes)
-			if method == "" {
-				// For Tron chain type, return a proper JSON-RPC error for invalid requests
-				if r.URL.Path == "/" {
-					p.writeErrorResponse(w, r, "Invalid JSON request", http.StatusBadRequest)
-					return
-				}
-				continue
-			}
-
-			// Determine the correct URL prefix based on the original request path
-			urlPrefix := "/wallet/"
-			if strings.HasPrefix(r.URL.Path, "/walletsolidity/") {
-				urlPrefix = "/walletsolidity/"
-			}
-
-			url := target.config.Connection.HTTP.URL + urlPrefix + method
-			if p.forwardRequest(w, r, requestBody, start, target, url) {
-				return
-			}
-			continue
+			url += r.URL.Path
 		}
 
-		// Standard HTTP request
-		if p.forwardRequest(w, r, bodyBytes, start, target, target.config.Connection.HTTP.URL) {
+		if p.forwardRequest(w, r, bodyBytes, start, target, url) {
 			return
 		}
 	}
 
 	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
-}
-
-func (p *Proxy) extractMethodAndBody(path string, body []byte) (string, []byte) {
-	// Fast path: REST-style wallet endpoint
-	switch {
-	case strings.HasPrefix(path, "/wallet/"):
-		return strings.TrimPrefix(path, "/wallet/"), body
-	case strings.HasPrefix(path, "/walletsolidity/"):
-		return strings.TrimPrefix(path, "/walletsolidity/"), body
-	}
-
-	// For JSON-RPC requests, just extract the method for URL routing
-	var parsed struct {
-		Method string `json:"method"`
-	}
-
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		p.logger.Error("Invalid JSON", "error", err, "body", string(body))
-		return "", nil
-	}
-
-	if parsed.Method == "" {
-		p.logger.Error("Missing method", "body", string(body))
-		return "", nil
-	}
-
-	// Strip wallet/ or walletsolidity/ prefix from the method for URL routing
-	method := parsed.Method
-	if strings.HasPrefix(method, "wallet/") {
-		method = strings.TrimPrefix(method, "wallet/")
-	} else if strings.HasPrefix(method, "walletsolidity/") {
-		method = strings.TrimPrefix(method, "walletsolidity/")
-	}
-
-	// Return the stripped method for URL routing and the original body
-	return method, body
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy
