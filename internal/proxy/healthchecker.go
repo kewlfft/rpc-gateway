@@ -87,6 +87,9 @@ type HealthChecker struct {
 
 	// callback function to be called when block number is updated
 	onBlockNumberUpdate atomic.Value
+	
+	// callback function to be called before tainting (for cleanup)
+	onBeforeTaint atomic.Value
 }
 
 func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
@@ -337,6 +340,11 @@ func (h *HealthChecker) SetBlockNumberUpdateCallback(callback BlockNumberUpdateC
 	h.onBlockNumberUpdate.Store(callback)
 }
 
+// SetBeforeTaintCallback sets the callback function to be called before tainting.
+func (h *HealthChecker) SetBeforeTaintCallback(callback func()) {
+	h.onBeforeTaint.Store(callback)
+}
+
 func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 	ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
 	defer cancel()
@@ -435,6 +443,13 @@ func (h *HealthChecker) IsTainted() bool {
 }
 
 func (h *HealthChecker) Taint(cfg TaintConfig) {
+	// Call cleanup callback if set (only for WebSocket connections)
+	if h.config.ConnectionType == "websocket" {
+		if callback, ok := h.onBeforeTaint.Load().(func()); ok && callback != nil {
+			callback()
+		}
+	}
+
 	// Phase 1: Immediate atomic taint
 	h.isTainted.Store(true)
 

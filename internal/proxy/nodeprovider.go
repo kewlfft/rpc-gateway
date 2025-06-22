@@ -47,4 +47,12 @@ func (n *NodeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	n.proxy.ServeHTTP(w, r)
 }
 
+// GetWebSocketProxy returns the WebSocket proxy if it exists
+func (n *NodeProvider) GetWebSocketProxy() *WebSocketProxy {
+	if n.wsProxy == nil {
+		return nil
+	}
+	return n.wsProxy.(*WebSocketProxy)
+}
+
 

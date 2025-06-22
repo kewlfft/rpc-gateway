@@ -99,6 +99,18 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		proxy.targets = append(proxy.targets, p)
 	}
 
+	// Wire up WebSocket proxy references to health checkers
+	wsProxies := make(map[string]*WebSocketProxy)
+	for _, target := range proxy.targets {
+		if wsProxy := target.GetWebSocketProxy(); wsProxy != nil {
+			wsProxies[target.Name()] = wsProxy
+		}
+	}
+	
+	if len(wsProxies) > 0 {
+		hcm.SetWebSocketProxyReferences(wsProxies)
+	}
+
 	// Start health check manager if not disabled
 	if !config.DisableHealthChecks {
 		if err := hcm.Start(ctx); err != nil {

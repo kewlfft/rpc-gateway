@@ -45,6 +45,8 @@ type HealthCheckManager struct {
 	mu       sync.RWMutex
 	// Add initial delay for path-level staggering
 	initialDelay time.Duration
+	// Add map for O(1) health checker lookups
+	checkerMap map[string]*HealthChecker // key: "name:connectionType"
 }
 
 // NewHealthCheckManager creates a new health check manager
@@ -59,6 +61,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 		path:     config.Path,
 		// Use incremental staggering
 		initialDelay: time.Duration(config.PathIndex * 500) * time.Millisecond,
+		checkerMap: make(map[string]*HealthChecker),
 	}
 
 	for _, target := range config.Targets {
@@ -104,6 +107,10 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 			})
 
 			checkers = append(checkers, checker)
+			
+			// Store in map for O(1) lookups
+			key := fmt.Sprintf("%s:%s", target.Name, conn.connType)
+			hcm.checkerMap[key] = checker
 		}
 	}
 
@@ -136,10 +143,9 @@ func (h *HealthCheckManager) IsHealthy(name string, connectionType string) bool 
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, checker := range h.checkers {
-		if checker.Name() == name && checker.config.ConnectionType == connectionType {
-			return checker.IsHealthy()
-		}
+	key := fmt.Sprintf("%s:%s", name, connectionType)
+	if checker, exists := h.checkerMap[key]; exists {
+		return checker.IsHealthy()
 	}
 	return false
 }
@@ -149,12 +155,25 @@ func (h *HealthCheckManager) GetHealthChecker(name string, connectionType string
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, checker := range h.checkers {
-		if checker.Name() == name && checker.config.ConnectionType == connectionType {
-			return checker
+	key := fmt.Sprintf("%s:%s", name, connectionType)
+	return h.checkerMap[key]
+}
+
+// SetWebSocketProxyReferences sets the WebSocket proxy references for all WebSocket health checkers
+func (h *HealthCheckManager) SetWebSocketProxyReferences(wsProxies map[string]*WebSocketProxy) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for name, wsProxy := range wsProxies {
+		key := fmt.Sprintf("%s:websocket", name)
+		if checker, exists := h.checkerMap[key]; exists {
+			checker.SetBeforeTaintCallback(func() {
+				wsProxy.UnsubscribeAll()
+			})
+			h.logger.Debug("WebSocket proxy reference set", 
+				"provider", name, "path", h.path)
 		}
 	}
-	return nil
 }
 
 // reportStatusMetrics reports the current status of all providers
