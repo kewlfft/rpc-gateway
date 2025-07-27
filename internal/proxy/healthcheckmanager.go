@@ -98,6 +98,14 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				InitialDelay:      hcm.initialDelay, // Pass the path-level initial delay
 			})
 			if err != nil {
+				// For WebSocket connections, log a warning and continue instead of failing
+				if conn.connType == "websocket" {
+					config.Logger.Warn("failed to create WebSocket health checker, skipping WebSocket health checks",
+						"target", target.Name,
+						"url", conn.url,
+						"error", err)
+					continue
+				}
 				return nil, fmt.Errorf("failed to create %s health checker for target %s: %w", conn.connType, target.Name, err)
 			}
 

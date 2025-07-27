@@ -145,7 +145,15 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 
 	switch {
 	case h.config.ConnectionType == "websocket":
-		conn, _, err := websocket.DefaultDialer.DialContext(ctx, h.config.URL, nil)
+		// Create a custom dialer with more robust TLS settings
+		dialer := websocket.Dialer{
+			HandshakeTimeout: 30 * time.Second,
+			ReadBufferSize:   1024,
+			WriteBufferSize:  1024,
+			EnableCompression: true,
+		}
+		
+		conn, _, err := dialer.DialContext(ctx, h.config.URL, nil)
 		if err != nil {
 			h.config.Logger.Error("WebSocket connection failed", "err", err)
 			return 0, err
