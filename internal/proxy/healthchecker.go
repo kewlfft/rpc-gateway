@@ -93,11 +93,6 @@ type HealthChecker struct {
 }
 
 func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
-	client, err := rpc.Dial(config.URL)
-	if err != nil {
-		return nil, err
-	}
-
 	// Set default chain type if not specified
 	if config.ChainType == "" {
 		config.ChainType = "evm"
@@ -108,7 +103,16 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		config.ConnectionType = "http"
 	}
 
-	client.SetHeader("User-Agent", userAgent)
+	var client *rpc.Client
+	// Only create RPC client for HTTP connections to avoid TLS issues with WebSocket endpoints
+	if config.ConnectionType == "http" {
+		var err error
+		client, err = rpc.Dial(config.URL)
+		if err != nil {
+			return nil, err
+		}
+		client.SetHeader("User-Agent", userAgent)
+	}
 
 	healthchecker := &HealthChecker{
 		config:     config,
