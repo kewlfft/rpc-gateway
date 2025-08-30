@@ -16,10 +16,16 @@ const (
 	contentType = "Content-Type"
 )
 
+type JSONRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
 type JSONRPCResponse struct {
-	Jsonrpc string `json:"jsonrpc"`
-	ID      int    `json:"id"`
-	Result  string `json:"result"`
+	Jsonrpc string        `json:"jsonrpc"`
+	ID      int           `json:"id"`
+	Result  string        `json:"result,omitempty"`
+	Error   *JSONRPCError `json:"error,omitempty"`
 }
 
 func hexToUint(hexString string) (uint64, error) {
@@ -80,6 +86,16 @@ func performGasLeftCall(c context.Context, client *http.Client, url string) (uin
 	err = json.NewDecoder(resp.Body).Decode(result)
 	if err != nil {
 		return 0, fmt.Errorf("performGasLeftCall: json.Decode error: %w", err)
+	}
+
+	// Check for JSON-RPC error response
+	if result.Error != nil {
+		return 0, fmt.Errorf("performGasLeftCall: JSON-RPC error: code=%d, message=%s", result.Error.Code, result.Error.Message)
+	}
+
+	// Check for empty result
+	if result.Result == "" {
+		return 0, errors.New("performGasLeftCall: empty result from RPC provider")
 	}
 
 	return hexToUint(result.Result)
