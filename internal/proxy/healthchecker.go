@@ -157,9 +157,28 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 			EnableCompression: true,
 		}
 		
-		conn, _, err := dialer.DialContext(ctx, h.config.URL, nil)
+		conn, resp, err := dialer.DialContext(ctx, h.config.URL, nil)
 		if err != nil {
-			h.config.Logger.Error("WebSocket connection failed", "err", err)
+			// Enhanced error logging for TLS issues
+			h.config.Logger.Error("WebSocket connection failed", 
+				"err", err,
+				"url", h.config.URL,
+				"provider", h.config.Name,
+				"chainType", h.config.ChainType,
+				"path", h.config.Path,
+				"responseStatus", func() int {
+					if resp != nil {
+						return resp.StatusCode
+					}
+					return 0
+				}(),
+				"responseHeaders", func() map[string][]string {
+					if resp != nil {
+						return resp.Header
+					}
+					return nil
+				}(),
+			)
 			return 0, err
 		}
 		defer conn.Close()
