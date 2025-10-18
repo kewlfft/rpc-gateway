@@ -212,7 +212,7 @@ func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, s
 }
 
 // forwardRequest handles both standard and Tron requests with direct streaming
-func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) bool {
+func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string, responseWritten *bool) bool {
 	name := target.Name()
 
 	// Create a new context with timeout for this specific request to avoid context cancellation cascade
@@ -286,6 +286,8 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 				"error", err,
 				"url", urlPath,
 				"method", r.Method)
+			// Mark response as written since client disconnected
+			*responseWritten = true
 			// Don't taint provider for client disconnection
 			return false
 		}
@@ -359,7 +361,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				url += r.URL.Path
 			}
 
-			if p.forwardRequest(w, r, bodyBytes, start, target, url) {
+			if p.forwardRequest(w, r, bodyBytes, start, target, url, &responseWritten) {
 				responseWritten = true
 				return
 			}

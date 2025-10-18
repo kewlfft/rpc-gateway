@@ -26,6 +26,15 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	
+	// Use a defer with recover to handle potential WriteHeader panics
+	// This prevents "superfluous response.WriteHeader call" errors
+	defer func() {
+		if r := recover(); r != nil {
+			// Headers were already written, ignore the panic
+		}
+	}()
+	
 	w.WriteHeader(status)
 
 	_ = json.NewEncoder(w).Encode(map[string]any{
