@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/errors"
@@ -135,19 +136,37 @@ func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, messa
 
 // copyResponse copies headers, status code, and body from the source response to the target response writer
 func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
-	// Copy headers
-	for k, v := range resp.Header {
-		w.Header()[k] = v
+	// Check if headers have already been written to avoid "superfluous response.WriteHeader call"
+	if w.Header().Get("Content-Type") == "" {
+		// Copy headers only if they haven't been written yet
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
 	}
-
-	w.WriteHeader(resp.StatusCode)
 
 	// Stream the response body directly
 	if _, err := io.Copy(w, resp.Body); err != nil {
+		// Check if this is a broken pipe error (client disconnected)
+		if isBrokenPipeError(err) {
+			// Don't treat broken pipe as a provider failure - it's a client disconnection
+			return fmt.Errorf("client disconnected: %w", err)
+		}
 		return fmt.Errorf("failed to stream response: %w", err)
 	}
 
 	return nil
+}
+
+// isBrokenPipeError checks if the error is a broken pipe error (client disconnected)
+func isBrokenPipeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "broken pipe") || 
+		   strings.Contains(errStr, "connection reset by peer") ||
+		   strings.Contains(errStr, "use of closed network connection")
 }
 
 // handleProviderFailure handles provider failure by recording metrics, tainting the provider, and logging
@@ -196,8 +215,13 @@ func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, s
 func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) bool {
 	name := target.Name()
 
-	// Create request with proper URL
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, urlPath, bytes.NewReader(body))
+	// Create a new context with timeout for this specific request to avoid context cancellation cascade
+	// This prevents all providers from failing when the original request context is cancelled
+	ctx, cancel := p.createRequestContext()
+	defer cancel()
+
+	// Create request with proper URL using the new context
+	req, err := http.NewRequestWithContext(ctx, r.Method, urlPath, bytes.NewReader(body))
 	if err != nil {
 		p.logger.Error("Failed to create request",
 			"error", err,
@@ -226,10 +250,19 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 	// Use direct HTTP client call for minimal latency
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Error("Request failed",
-			"error", err,
-			"url", urlPath,
-			"method", r.Method)
+		// Check if this is a context cancellation error
+		if ctx.Err() == context.Canceled || ctx.Err() == context.DeadlineExceeded {
+			p.logger.Warn("Request cancelled or timed out",
+				"error", err,
+				"url", urlPath,
+				"method", r.Method,
+				"context_error", ctx.Err())
+		} else {
+			p.logger.Error("Request failed",
+				"error", err,
+				"url", urlPath,
+				"method", r.Method)
+		}
 		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
 		return false
 	}
@@ -247,6 +280,16 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 	}
 
 	if err := p.copyResponse(w, resp); err != nil {
+		// Check if this is a broken pipe error (client disconnected)
+		if isBrokenPipeError(err) {
+			p.logger.Debug("Client disconnected during response streaming",
+				"error", err,
+				"url", urlPath,
+				"method", r.Method)
+			// Don't taint provider for client disconnection
+			return false
+		}
+		
 		p.logger.Error("Failed to copy response",
 			"error", err,
 			"url", urlPath,
@@ -264,6 +307,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	isWebSocket := websocket.IsWebSocketUpgrade(r)
 
+	// Track if response has been written to prevent multiple writes
+	responseWritten := false
+
 	var bodyBytes []byte
 	if !isWebSocket {
 		var err error
@@ -275,37 +321,62 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"method", r.Method,
 				"path", r.URL.Path)
 			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
+			responseWritten = true
 			return
 		}
 	}
 
-	for _, target := range p.targets {
-		name := target.Name()
-		connType := "http"
-		if isWebSocket {
-			connType = "websocket"
-		}
+	// Track failed providers to avoid retrying the same provider
+	failedProviders := make(map[string]bool)
+	maxRetries := 2 // Allow up to 2 retries for context cancellation
+	
+	for attempt := 0; attempt <= maxRetries && !responseWritten; attempt++ {
+		for _, target := range p.targets {
+			// Check if response has already been written (e.g., client disconnected)
+			if responseWritten {
+				break
+			}
+			
+			name := target.Name()
+			connType := "http"
+			if isWebSocket {
+				connType = "websocket"
+			}
 
-		if !p.hcm.IsHealthy(name, connType) {
-			continue
-		}
+			// Skip if provider is unhealthy or already failed
+			if !p.hcm.IsHealthy(name, connType) || failedProviders[name] {
+				continue
+			}
 
-		if isWebSocket {
-			target.ServeHTTP(w, r)
-			return
-		}
+			if isWebSocket {
+				target.ServeHTTP(w, r)
+				responseWritten = true
+				return
+			}
 
-		url := target.config.Connection.HTTP.URL
-		if p.chainType == "tron" {
-			url += r.URL.Path
-		}
+			url := target.config.Connection.HTTP.URL
+			if p.chainType == "tron" {
+				url += r.URL.Path
+			}
 
-		if p.forwardRequest(w, r, bodyBytes, start, target, url) {
-			return
+			if p.forwardRequest(w, r, bodyBytes, start, target, url) {
+				responseWritten = true
+				return
+			}
+			
+			// Mark this provider as failed for this request
+			failedProviders[name] = true
+		}
+		
+		// If we've tried all providers and this is not the last attempt, wait briefly before retry
+		if attempt < maxRetries && !responseWritten {
+			time.Sleep(time.Millisecond * 100) // Brief delay before retry
 		}
 	}
 
-	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
+	if !responseWritten {
+		p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
+	}
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy
@@ -321,4 +392,9 @@ func (p *Proxy) GetChainType() string {
 // GetTargets returns a copy of the targets slice
 func (p *Proxy) GetTargets() []*NodeProvider {
 	return p.targets
+}
+
+// createRequestContext creates a new context for a request to avoid context cancellation cascade
+func (p *Proxy) createRequestContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), p.timeout)
 }

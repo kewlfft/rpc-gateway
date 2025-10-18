@@ -32,7 +32,7 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 
 		assert.Zero(t, gas)
 		assert.Error(t, err)
-		assert.ErrorContains(t, err, "non-200 HTTP response")
+		assert.ErrorContains(t, err, "unexpected status")
 	})
 
 	t.Run("expect error when JSON payload is invalid", func(t *testing.T) {
@@ -54,7 +54,7 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 
 		assert.Zero(t, gas)
 		assert.Error(t, err)
-		assert.ErrorContains(t, err, "json.Decode error")
+		assert.ErrorContains(t, err, "decode:")
 	})
 
 	t.Run("expect error when server timeouts", func(t *testing.T) {
