@@ -86,7 +86,13 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		client: &http.Client{
 			Timeout: config.Timeout,
 			Transport: &http.Transport{
-				DisableCompression: true, // Prevent auto-decompression so we can forward gzip as-is
+				// Connection pooling optimizations
+				MaxIdleConns:          1024,  // Increased from default 100
+				MaxIdleConnsPerHost:   256,   // Increased from default 2
+				IdleConnTimeout:       90 * time.Second, // Keep connections alive longer
+				ResponseHeaderTimeout: config.Timeout,    // Use same timeout as client
+				DisableCompression:    true, // Prevent auto-decompression so we can forward gzip as-is
+				ForceAttemptHTTP2:     true, // Enable HTTP/2 for better multiplexing
 			},
 		},
 	}
