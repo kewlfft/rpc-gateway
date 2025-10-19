@@ -69,10 +69,15 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p.logger.Debug("websocket tunnel established")
 
+	// Track subscriptions for this specific connection
+	connectionSubscriptions := make(map[string]bool)
+	
 	errCh := make(chan error, 2)
 	var once sync.Once
 	closeAll := func() {
 		once.Do(func() {
+			// Clean up subscriptions for this connection
+			p.cleanupConnectionSubscriptions(connectionSubscriptions)
 			clientConn.Close()
 			targetConn.Close()
 		})
@@ -97,9 +102,9 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			
 			// Track subscriptions if this is a client->target message
 			if direction == "client->target" {
-				p.trackSubscriptionFromMessage(msgBytes)
+				p.trackSubscriptionFromMessage(msgBytes, connectionSubscriptions)
 			} else if direction == "target->client" {
-				p.trackSubscriptionResponse(msgBytes)
+				p.trackSubscriptionResponse(msgBytes, connectionSubscriptions)
 			}
 			
 			writer, err := dst.NextWriter(mt)
@@ -210,7 +215,7 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte) {
+func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectionSubscriptions map[string]bool) {
 	// Parse JSON-RPC message
 	var msg map[string]interface{}
 	if err := json.Unmarshal(msgBytes, &msg); err != nil {
@@ -232,13 +237,15 @@ func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte) {
 	if method == "eth_unsubscribe" || method == "shh_unsubscribe" || method == "net_unsubscribe" {
 		if params, ok := msg["params"].([]interface{}); ok && len(params) > 0 {
 			if subID, ok := params[0].(string); ok {
+				// Remove from both connection-specific and global maps
+				delete(connectionSubscriptions, subID)
 				p.RemoveSubscription(subID)
 			}
 		}
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionResponse(msgBytes []byte) {
+func (p *WebSocketProxy) trackSubscriptionResponse(msgBytes []byte, connectionSubscriptions map[string]bool) {
 	// Parse JSON-RPC message
 	var msg map[string]interface{}
 	if err := json.Unmarshal(msgBytes, &msg); err != nil {
@@ -248,9 +255,31 @@ func (p *WebSocketProxy) trackSubscriptionResponse(msgBytes []byte) {
 	// Check if this is a response with a result (subscription ID)
 	if result, ok := msg["result"]; ok {
 		if subID, ok := result.(string); ok {
-			// This is likely a subscription ID from a successful subscription
+			// Track in both connection-specific and global maps
+			connectionSubscriptions[subID] = true
 			p.TrackSubscription(subID)
 			p.logger.Debug("subscription ID tracked from response", "subID", subID)
 		}
+	}
+}
+
+// cleanupConnectionSubscriptions removes subscriptions for a specific connection
+func (p *WebSocketProxy) cleanupConnectionSubscriptions(connectionSubscriptions map[string]bool) {
+	if len(connectionSubscriptions) == 0 {
+		return
+	}
+	
+	p.logger.Debug("cleaning up connection subscriptions", "count", len(connectionSubscriptions))
+	
+	// Remove from global map
+	p.mu.Lock()
+	for subID := range connectionSubscriptions {
+		delete(p.subscriptions, subID)
+	}
+	p.mu.Unlock()
+	
+	// Clear connection-specific map
+	for subID := range connectionSubscriptions {
+		delete(connectionSubscriptions, subID)
 	}
 } 

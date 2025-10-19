@@ -435,12 +435,26 @@ func (h *HealthChecker) Start(c context.Context) {
 		"connectionType", h.config.ConnectionType,
 		"provider", h.config.Name,
 		"path", h.config.Path)
+	
+	// Create independent context for health checking to avoid cascade
+	healthCtx, healthCancel := context.WithCancel(context.Background())
+	defer healthCancel()
+	
+	// Graceful shutdown goroutine
+	go func() {
+		<-c.Done()
+		h.config.Logger.Info("health checker shutting down gracefully", 
+			"provider", h.config.Name,
+			"path", h.config.Path)
+		healthCancel()
+	}()
+	
 	timer := time.NewTimer(h.config.InitialDelay)
 	defer timer.Stop()
 
 	for {
 		select {
-		case <-c.Done():
+		case <-healthCtx.Done():
 			if !h.stopped.Swap(true) {
 				close(h.stopCh)
 			}
