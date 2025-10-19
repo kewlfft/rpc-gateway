@@ -497,7 +497,7 @@ func (h *HealthChecker) Stop(_ context.Context) error {
 }
 
 func (h *HealthChecker) IsHealthy() bool {
-	return !h.isTainted.Load()
+	return !h.IsTainted()
 }
 
 func (h *HealthChecker) IsTainted() bool {

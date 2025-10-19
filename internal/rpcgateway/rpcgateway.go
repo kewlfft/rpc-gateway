@@ -173,16 +173,14 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 					return
 				}
 
-				// Optimize path handling based on chain type
+				// Handle path based on chain type
 				if chainType == "tron" {
-					// Handle Tron chain paths
-					if path := strings.TrimPrefix(r.URL.Path, "/"+path); path != "" {
-						r.URL.Path = path
+					if trimmed := strings.TrimPrefix(r.URL.Path, "/"+path); trimmed != "" {
+						r.URL.Path = trimmed
 					} else {
 						r.URL.Path = "/"
 					}
 				} else {
-					// For non-Tron chains, preserve the original path
 					r.URL.Path = strings.TrimPrefix(r.URL.Path, "/"+path)
 				}
 

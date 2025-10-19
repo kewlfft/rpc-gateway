@@ -225,7 +225,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 
 	// Create a new context with timeout for this specific request to avoid context cancellation cascade
 	// This prevents all providers from failing when the original request context is cancelled
-	ctx, cancel := p.createRequestContext()
+	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 
 	// Create request with proper URL using the new context
@@ -400,7 +400,3 @@ func (p *Proxy) GetTargets() []*NodeProvider {
 	return p.targets
 }
 
-// createRequestContext creates a new context for a request to avoid context cancellation cascade
-func (p *Proxy) createRequestContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), p.timeout)
-}

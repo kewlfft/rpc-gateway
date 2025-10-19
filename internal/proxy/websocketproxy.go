@@ -220,7 +220,6 @@ func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectio
 
 	// Check if this is a subscription request
 	if method == "eth_subscribe" || method == "shh_subscribe" || method == "net_subscribe" {
-		// Extract subscription ID from response (we'll track it when we see the response)
 		p.logger.Debug("subscription request detected", "method", method)
 	}
 
