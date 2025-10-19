@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -19,8 +18,13 @@ var (
 	BuildTime = "unknown"
 )
 
+// Helper function for writing error messages to stderr
+func writeError(msg string) {
+	os.Stderr.Write([]byte(msg + "\n"))
+}
+
 func printVersion() {
-	fmt.Printf("rpcgateway v%s (git: %s, built: %s)\n", Version, GitCommit, BuildTime)
+	os.Stdout.Write([]byte("rpcgateway v" + Version + " (git: " + GitCommit + ", built: " + BuildTime + ")\n"))
 	os.Exit(0)
 }
 
@@ -40,8 +44,8 @@ func main() {
 
 	// Validate required flags
 	if *configPath == "" {
-		fmt.Fprintf(os.Stderr, "Error: --config flag is required\n")
-		fmt.Fprintf(os.Stderr, "Usage: %s --config <config-file> [--randomize-providers] [--version]\n", os.Args[0])
+		writeError("Error: --config flag is required")
+		writeError("Usage: " + os.Args[0] + " --config <config-file> [--randomize-providers] [--version]")
 		os.Exit(1)
 	}
 
@@ -54,7 +58,7 @@ func main() {
 
 	service, err := rpcgateway.NewRPCGatewayFromConfigFile(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		writeError("error: " + err.Error())
 		os.Exit(1)
 	}
 
@@ -79,7 +83,7 @@ func main() {
 	}()
 
 	if err := service.Start(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		writeError("error: " + err.Error())
 		os.Exit(1)
 	}
 
