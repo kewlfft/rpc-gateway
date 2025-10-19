@@ -35,13 +35,6 @@ var (
 	)
 )
 
-// Duration is a custom type that implements slog.LogValuer for better duration formatting
-type Duration time.Duration
-
-func (d Duration) LogValue() slog.Value {
-	return slog.StringValue(time.Duration(d).String())
-}
-
 // ChainTypeHandler is an interface that extends http.Handler with chain type information
 type ChainTypeHandler interface {
 	http.Handler
@@ -175,17 +168,28 @@ func isBrokenPipeError(err error) bool {
 		   strings.Contains(errStr, "use of closed network connection")
 }
 
+// getConnectionType determines the connection type based on the request
+func (p *Proxy) getConnectionType(r *http.Request) string {
+	if websocket.IsWebSocketUpgrade(r) {
+		return "websocket"
+	}
+	return "http"
+}
+
+// recordMetrics records metrics for a request
+func (p *Proxy) recordMetrics(method, name, status string, start time.Time) int64 {
+	duration := time.Since(start).Milliseconds()
+	metricRequestDuration.WithLabelValues(method, name, status).Observe(float64(duration) / 1000)
+	metricRequestErrors.WithLabelValues(method, name, status).Inc()
+	return duration
+}
+
 // handleProviderFailure handles provider failure by recording metrics, tainting the provider, and logging
 func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.Time, statusCode int, err error) {
-	durationMs := time.Since(start).Milliseconds()
-	metricRequestDuration.WithLabelValues(r.Method, name, "error").Observe(float64(durationMs) / 1000)
-	metricRequestErrors.WithLabelValues(r.Method, name, "error").Inc()
+	duration := p.recordMetrics(r.Method, name, "error", start)
 	metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
 
-	connectionType := "http"
-	if websocket.IsWebSocketUpgrade(r) {
-		connectionType = "websocket"
-	}
+	connectionType := p.getConnectionType(r)
 
 	if hc := p.hcm.GetHealthChecker(name, connectionType); hc != nil {
 		hc.TaintHTTP()
@@ -198,15 +202,13 @@ func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.T
 		"method", r.Method,
 		"upstream_path", r.URL.Path,
 		"path", p.hcm.path,
-		"duration_ms", durationMs,
+		"duration_ms", duration,
 		"connectionType", connectionType,
 	)
 }
 
 func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, start time.Time) {
-	duration := time.Since(start).Milliseconds()
-	metricRequestDuration.WithLabelValues(r.Method, name, "success").Observe(float64(duration) / 1000)
-	metricRequestErrors.WithLabelValues(r.Method, name, "success").Inc()
+	duration := p.recordMetrics(r.Method, name, "success", start)
 
 	p.logger.Debug("request handled",
 		"provider", name,
@@ -340,16 +342,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	
 	for attempt := 0; attempt <= maxRetries && !responseWritten; attempt++ {
 		for _, target := range p.targets {
-			// Check if response has already been written (e.g., client disconnected)
 			if responseWritten {
-				break
+				return
 			}
 			
 			name := target.Name()
-			connType := "http"
-			if isWebSocket {
-				connType = "websocket"
-			}
+			connType := p.getConnectionType(r)
 
 			// Skip if provider is unhealthy or already failed
 			if !p.hcm.IsHealthy(name, connType) || failedProviders[name] {
@@ -377,7 +375,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		
 		// If we've tried all providers and this is not the last attempt, wait briefly before retry
-		if attempt < maxRetries && !responseWritten {
+		if attempt < maxRetries {
 			time.Sleep(time.Millisecond * 100) // Brief delay before retry
 		}
 	}
