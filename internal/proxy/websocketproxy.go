@@ -31,6 +31,9 @@ type WebSocketProxy struct {
 	// Subscription tracking
 	subscriptions map[string]bool
 	mu            sync.RWMutex
+	// Connection pooling
+	connPool chan *websocket.Conn
+	poolMu   sync.Mutex
 }
 
 func NewWebSocketProxy(targetURL string, logger *slog.Logger) *WebSocketProxy {
@@ -38,6 +41,7 @@ func NewWebSocketProxy(targetURL string, logger *slog.Logger) *WebSocketProxy {
 		targetURL: targetURL, 
 		logger: logger,
 		subscriptions: make(map[string]bool),
+		connPool: make(chan *websocket.Conn, 5), // Pool of 5 connections
 	}
 }
 
@@ -53,19 +57,13 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout:  handshakeTimeout,
-		ReadBufferSize:    bufferSize,
-		WriteBufferSize:   bufferSize,
-		EnableCompression: true,
-	}
-
-	targetConn, resp, err := dialer.Dial(p.targetURL, nil)
-	if err != nil {
-		p.logger.Error("dial to target failed", "error", err, "resp", resp)
+	// Get connection from pool
+	targetConn := p.getConnection()
+	if targetConn == nil {
+		p.logger.Error("failed to get target connection")
 		return
 	}
-	defer targetConn.Close()
+	defer p.returnConnection(targetConn)
 
 	p.logger.Debug("websocket tunnel established")
 
@@ -183,20 +181,13 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 
 	p.logger.Info("unsubscribing from all subscriptions", "count", len(subIDs))
 	
-	// Create a new connection to send unsubscribe messages
-	dialer := websocket.Dialer{
-		HandshakeTimeout:  handshakeTimeout,
-		ReadBufferSize:    bufferSize,
-		WriteBufferSize:   bufferSize,
-		EnableCompression: true,
-	}
-
-	conn, _, err := dialer.Dial(p.targetURL, nil)
-	if err != nil {
-		p.logger.Error("failed to create connection for unsubscribe", "error", err)
+	// Get connection from pool or create new one
+	conn := p.getConnection()
+	if conn == nil {
+		p.logger.Error("failed to get connection for unsubscribe")
 		return
 	}
-	defer conn.Close()
+	defer p.returnConnection(conn)
 
 	// Send unsubscribe messages for each subscription
 	for _, subID := range subIDs {
@@ -282,4 +273,55 @@ func (p *WebSocketProxy) cleanupConnectionSubscriptions(connectionSubscriptions 
 	for subID := range connectionSubscriptions {
 		delete(connectionSubscriptions, subID)
 	}
+}
+
+// getConnection gets a connection from the pool or creates a new one
+func (p *WebSocketProxy) getConnection() *websocket.Conn {
+	// Try to get from pool first
+	select {
+	case conn := <-p.connPool:
+		// Test if connection is still alive
+		if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingTimeout)); err != nil {
+			conn.Close()
+			// Create new connection if pool connection is dead
+			return p.createNewConnection()
+		}
+		return conn
+	default:
+		// Pool is empty, create new connection
+		return p.createNewConnection()
+	}
+}
+
+// returnConnection returns a connection to the pool
+func (p *WebSocketProxy) returnConnection(conn *websocket.Conn) {
+	if conn == nil {
+		return
+	}
+	
+	select {
+	case p.connPool <- conn:
+		// Connection returned to pool
+	default:
+		// Pool is full, close connection
+		conn.Close()
+	}
+}
+
+// createNewConnection creates a new WebSocket connection
+func (p *WebSocketProxy) createNewConnection() *websocket.Conn {
+	dialer := websocket.Dialer{
+		HandshakeTimeout:  handshakeTimeout,
+		ReadBufferSize:    bufferSize,
+		WriteBufferSize:   bufferSize,
+		EnableCompression: true,
+	}
+
+	conn, _, err := dialer.Dial(p.targetURL, nil)
+	if err != nil {
+		p.logger.Error("failed to create new connection", "error", err)
+		return nil
+	}
+	
+	return conn
 } 
