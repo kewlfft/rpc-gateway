@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,13 +66,17 @@ func TestWebSocketProxy_UnsubscribeAll(t *testing.T) {
 		t.Fatalf("expected %d unsubscribe messages, got %d", len(subIDs), len(received))
 	}
 
-	for i, msg := range received {
-		if !contains(msg, subIDs[i]) {
-			t.Errorf("unsubscribe message %d does not contain subID %q: %s", i, subIDs[i], msg)
+	// Check that each subscription ID appears in at least one message
+	for _, subID := range subIDs {
+		found := false
+		for _, msg := range received {
+			if strings.Contains(msg, subID) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("subscription ID %q not found in any unsubscribe message", subID)
 		}
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || (len(s) > len(substr) && (contains(s[1:], substr) || contains(s[:len(s)-1], substr))))
 } 

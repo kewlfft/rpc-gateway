@@ -29,7 +29,7 @@ func TestBasicHealthchecker(t *testing.T) {
 	}))
 	defer server.Close()
 
-	healtcheckConfig := HealthCheckerConfig{
+	healthcheckConfig := HealthCheckerConfig{
 		URL:              server.URL,
 		Name:             "test",
 		Interval:         time.Millisecond * 100, // Much shorter interval for testing
@@ -37,7 +37,7 @@ func TestBasicHealthchecker(t *testing.T) {
 		Logger:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 
-	healthchecker, err := NewHealthChecker(healtcheckConfig)
+	healthchecker, err := NewHealthChecker(healthcheckConfig)
 	assert.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

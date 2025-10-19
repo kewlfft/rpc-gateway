@@ -11,9 +11,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-const (
-	contentType = "Content-Type"
-)
 
 type JSONRPCError struct {
 	Code    int    `json:"code"`
@@ -28,7 +25,7 @@ type JSONRPCResponse struct {
 }
 
 func hexToUint(hexString string) (uint64, error) {
-	if len(hexString) >= 2 && hexString[0:2] == "0x" {
+	if len(hexString) >= 2 && hexString[:2] == "0x" {
 		hexString = hexString[2:]
 	}
 	return strconv.ParseUint(hexString, 16, 64)

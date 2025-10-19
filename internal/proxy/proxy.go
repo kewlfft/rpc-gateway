@@ -92,10 +92,7 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 
 	// Create providers for each target
 	for _, target := range config.Targets {
-		p, err := NewNodeProvider(target, config.Timeout, config.Logger)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create provider for target %s: %w", target.Name, err)
-		}
+		p := NewNodeProvider(target, config.Timeout, config.Logger)
 		proxy.targets = append(proxy.targets, p)
 	}
 
@@ -220,7 +217,7 @@ func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, s
 }
 
 // forwardRequest handles both standard and Tron requests with direct streaming
-func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string, responseWritten *bool) bool {
+func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) bool {
 	name := target.Name()
 
 	// Create a new context with timeout for this specific request to avoid context cancellation cascade
@@ -294,8 +291,6 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 				"error", err,
 				"url", urlPath,
 				"method", r.Method)
-			// Mark response as written since client disconnected
-			*responseWritten = true
 			// Don't taint provider for client disconnection
 			return false
 		}
@@ -317,9 +312,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	isWebSocket := websocket.IsWebSocketUpgrade(r)
 
-	// Track if response has been written to prevent multiple writes
-	responseWritten := false
-
 	var bodyBytes []byte
 	if !isWebSocket {
 		var err error
@@ -331,32 +323,34 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"method", r.Method,
 				"path", r.URL.Path)
 			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
-			responseWritten = true
 			return
 		}
 	}
 
+	// Pre-compute connection type and get healthy providers
+	connType := p.getConnectionType(r)
+	healthyProviders := p.getHealthyProviders(connType)
+	
+	if len(healthyProviders) == 0 {
+		p.writeErrorResponse(w, r, "No healthy providers available", http.StatusServiceUnavailable)
+		return
+	}
+
 	// Track failed providers to avoid retrying the same provider
-	failedProviders := make(map[string]bool)
+	failedProviders := make(map[string]bool, len(healthyProviders))
 	maxRetries := 2 // Allow up to 2 retries for context cancellation
 	
-	for attempt := 0; attempt <= maxRetries && !responseWritten; attempt++ {
-		for _, target := range p.targets {
-			if responseWritten {
-				return
-			}
-			
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		for _, target := range healthyProviders {
 			name := target.Name()
-			connType := p.getConnectionType(r)
-
-			// Skip if provider is unhealthy or already failed
-			if !p.hcm.IsHealthy(name, connType) || failedProviders[name] {
+			
+			// Skip if provider already failed or became unhealthy
+			if failedProviders[name] || !p.hcm.IsHealthy(name, connType) {
 				continue
 			}
 
 			if isWebSocket {
 				target.ServeHTTP(w, r)
-				responseWritten = true
 				return
 			}
 
@@ -365,8 +359,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				url += r.URL.Path
 			}
 
-			if p.forwardRequest(w, r, bodyBytes, start, target, url, &responseWritten) {
-				responseWritten = true
+			if p.forwardRequest(w, r, bodyBytes, start, target, url) {
 				return
 			}
 			
@@ -375,14 +368,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		
 		// If we've tried all providers and this is not the last attempt, wait briefly before retry
-		if attempt < maxRetries {
-			time.Sleep(time.Millisecond * 100) // Brief delay before retry
+		if attempt < maxRetries && len(failedProviders) < len(healthyProviders) {
+			time.Sleep(time.Millisecond * 50) // Reduced delay
 		}
 	}
 
-	if !responseWritten {
-		p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
-	}
+	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy
@@ -398,5 +389,16 @@ func (p *Proxy) GetChainType() string {
 // GetTargets returns a copy of the targets slice
 func (p *Proxy) GetTargets() []*NodeProvider {
 	return p.targets
+}
+
+// getHealthyProviders returns only healthy providers for the given connection type
+func (p *Proxy) getHealthyProviders(connType string) []*NodeProvider {
+	healthy := make([]*NodeProvider, 0, len(p.targets))
+	for _, target := range p.targets {
+		if p.hcm.IsHealthy(target.Name(), connType) {
+			healthy = append(healthy, target)
+		}
+	}
+	return healthy
 }
 

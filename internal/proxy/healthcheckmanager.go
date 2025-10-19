@@ -184,23 +184,6 @@ func (h *HealthCheckManager) SetWebSocketProxyReferences(wsProxies map[string]*W
 	}
 }
 
-// reportStatusMetrics reports the current status of all providers
-func (h *HealthCheckManager) reportStatusMetrics() {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	for i, checker := range h.checkers {
-		name := checker.Name()
-		status := "healthy"
-		if !checker.IsHealthy() {
-			status = "unhealthy"
-		}
-
-		metricRPCProviderInfo.WithLabelValues(fmt.Sprintf("%d", i), name, h.path).Set(1)
-		metricRPCProviderStatus.WithLabelValues(name, status, h.path).Set(1)
-		metricRPCProviderBlockNumber.WithLabelValues(name, h.path).Set(float64(checker.BlockNumber()))
-	}
-}
 
 // checkBlockLagAndTaint checks if a provider's block number is lagging behind others
 func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, updatedBlockNumber uint64) {

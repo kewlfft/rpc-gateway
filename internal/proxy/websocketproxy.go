@@ -46,10 +46,6 @@ func NewWebSocketProxy(targetURL string, logger *slog.Logger) *WebSocketProxy {
 }
 
 func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	p.logger.Debug("handling websocket upgrade",
-		"target", p.targetURL,
-		"path", r.URL.Path)
-
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		p.logger.Error("websocket upgrade failed", "error", err)
@@ -64,8 +60,6 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer p.returnConnection(targetConn)
-
-	p.logger.Debug("websocket tunnel established")
 
 	// Track subscriptions for this specific connection
 	connectionSubscriptions := make(map[string]bool)

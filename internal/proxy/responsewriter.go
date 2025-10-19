@@ -23,9 +23,3 @@ func (p *ResponseWriter) WriteHeader(statusCode int) {
 	p.statusCode = statusCode
 }
 
-func NewResponseWriter() *ResponseWriter {
-	return &ResponseWriter{
-		header: http.Header{},
-		body:   &bytes.Buffer{},
-	}
-}

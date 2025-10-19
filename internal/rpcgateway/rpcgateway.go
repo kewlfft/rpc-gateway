@@ -26,9 +26,6 @@ type RPCGateway struct {
 	metrics *metrics.Server
 }
 
-func (r *RPCGateway) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.server.Handler.ServeHTTP(w, req)
-}
 
 func (r *RPCGateway) Start(c context.Context) error {
 	// Check if ports are available

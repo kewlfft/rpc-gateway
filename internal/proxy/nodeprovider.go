@@ -9,16 +9,10 @@ import (
 
 type NodeProvider struct {
 	config  NodeProviderConfig
-	proxy   http.Handler
 	wsProxy http.Handler
 }
 
-func NewNodeProvider(config NodeProviderConfig, timeout time.Duration, logger *slog.Logger) (*NodeProvider, error) {
-	proxy, err := newNodeProviderProxy(config.Connection.HTTP.URL, timeout)
-	if err != nil {
-		return nil, err
-	}
-
+func NewNodeProvider(config NodeProviderConfig, timeout time.Duration, logger *slog.Logger) *NodeProvider {
 	var wsProxy http.Handler
 	if config.Connection.WebSocket.URL != "" {
 		wsProxy = NewWebSocketProxy(config.Connection.WebSocket.URL, logger)
@@ -26,9 +20,8 @@ func NewNodeProvider(config NodeProviderConfig, timeout time.Duration, logger *s
 
 	return &NodeProvider{
 		config:  config,
-		proxy:   proxy,
 		wsProxy: wsProxy,
-	}, nil
+	}
 }
 
 func (n *NodeProvider) Name() string {
@@ -37,22 +30,19 @@ func (n *NodeProvider) Name() string {
 
 func (n *NodeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if websocket.IsWebSocketUpgrade(r) {
-		if n.wsProxy == nil {
+		if n.wsProxy != nil {
+			n.wsProxy.ServeHTTP(w, r)
+		} else {
 			http.Error(w, "WebSocket not supported", http.StatusBadRequest)
-			return
 		}
-		n.wsProxy.ServeHTTP(w, r)
 		return
 	}
-	n.proxy.ServeHTTP(w, r)
+	http.Error(w, "HTTP requests handled by main proxy", http.StatusInternalServerError)
 }
 
-// GetWebSocketProxy returns the WebSocket proxy if it exists
 func (n *NodeProvider) GetWebSocketProxy() *WebSocketProxy {
 	if n.wsProxy == nil {
 		return nil
 	}
 	return n.wsProxy.(*WebSocketProxy)
 }
-
-
