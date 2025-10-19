@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/kewlfft/rpc-gateway/internal/errors"
@@ -155,15 +154,7 @@ func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 }
 
 // isBrokenPipeError checks if the error is a broken pipe error (client disconnected)
-func isBrokenPipeError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "broken pipe") || 
-		   strings.Contains(errStr, "connection reset by peer") ||
-		   strings.Contains(errStr, "use of closed network connection")
-}
+// isBrokenPipeError is defined in healthchecker_utils.go
 
 // getConnectionType determines the connection type based on the request
 func (p *Proxy) getConnectionType(r *http.Request) string {

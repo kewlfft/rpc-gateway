@@ -9,15 +9,81 @@ import (
 	"time"
 	"encoding/json"
 	"sync/atomic"
+	"bytes"
+	"io"
 
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/gorilla/websocket"
 )
 
 const (
 	userAgent = "rpc-gateway-health-check"
 )
+
+var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+// JSON-RPC response structure
+type JSONRPCResponse struct {
+	Result interface{} `json:"result"`
+	Error  *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+// makeJSONRPCCall makes an optimized JSON-RPC call
+func (h *HealthChecker) makeJSONRPCCall(ctx context.Context, method string, params []any) (*JSONRPCResponse, error) {
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		// Ensure buffer is always returned to pool, even on panic
+		bufPool.Put(buf)
+	}()
+
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+
+	if err := enc.Encode(struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      int    `json:"id"`
+		Method  string `json:"method"`
+		Params  any    `json:"params"`
+	}{"2.0", 1, method, params}); err != nil {
+		return nil, fmt.Errorf("failed to encode request: %w", err)
+	}
+
+	// Create a copy of buffer data to avoid race conditions
+	bodyData := make([]byte, buf.Len())
+	copy(bodyData, buf.Bytes())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.URL, bytes.NewReader(bodyData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var out JSONRPCResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if out.Error != nil {
+		return nil, fmt.Errorf("RPC error: %s", out.Error.Message)
+	}
+	return &out, nil
+}
+
+// parseHex is defined in healthchecker_utils.go
 
 // TaintConfig defines the taint behavior parameters
 type TaintConfig struct {
@@ -72,7 +138,6 @@ type BlockNumberUpdateCallback func(blockNumber uint64)
 
 type HealthChecker struct {
 	config              HealthCheckerConfig
-	client              *rpc.Client
 	httpClient          *http.Client
 	blockNumber        atomic.Uint64
 	mu                 sync.RWMutex // Only for taint state
@@ -103,20 +168,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		config.ConnectionType = "http"
 	}
 
-	var client *rpc.Client
-	// Only create RPC client for HTTP connections to avoid TLS issues with WebSocket endpoints
-	if config.ConnectionType == "http" {
-		var err error
-		client, err = rpc.Dial(config.URL)
-		if err != nil {
-			return nil, err
-		}
-		client.SetHeader("User-Agent", userAgent)
-	}
-
 	healthchecker := &HealthChecker{
 		config:     config,
-		client:     client,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 			Transport: &http.Transport{
@@ -259,23 +312,32 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 			}
 
 			var resp struct {
-				Result hexutil.Uint64 `json:"result"`
+				Result string `json:"result"`
 			}
 			if err := conn.ReadJSON(&resp); err != nil {
 				return 0, fmt.Errorf("eth_blockNumber response failed: %w", err)
 			}
 
-			blockNumber = uint64(resp.Result)
+			// Parse hex string to uint64 using optimized function
+			blockNumber, err = parseHex(resp.Result)
+			if err != nil {
+				return 0, fmt.Errorf("failed to parse block number: %w", err)
+			}
 		}
 
 	case h.config.ChainType == "solana":
-		var params struct {
-			Commitment string `json:"commitment"`
-		}
-		params.Commitment = "processed"
-		if err := h.client.CallContext(ctx, &blockNumber, "getSlot", params); err != nil {
+		// Make optimized JSON-RPC call
+		rpcResp, err := h.makeJSONRPCCall(ctx, "getSlot", []any{map[string]string{"commitment": "processed"}})
+		if err != nil {
 			return 0, err
 		}
+		
+		// Parse result to uint64
+		result, ok := rpcResp.Result.(float64)
+		if !ok {
+			return 0, fmt.Errorf("invalid result type for getSlot")
+		}
+		blockNumber = uint64(result)
 
 	case h.config.ChainType == "tron":
 		var response struct {
@@ -318,11 +380,22 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		blockNumber = response.BlockHeader.RawData.Number
 
 	default:
-		var ethBlock hexutil.Uint64
-		if err := h.client.CallContext(ctx, &ethBlock, "eth_blockNumber"); err != nil {
+		// Make optimized JSON-RPC call for EVM chains
+		rpcResp, err := h.makeJSONRPCCall(ctx, "eth_blockNumber", []any{})
+		if err != nil {
 			return 0, err
 		}
-		blockNumber = uint64(ethBlock)
+		
+		// Parse hex result to uint64
+		result, ok := rpcResp.Result.(string)
+		if !ok {
+			return 0, fmt.Errorf("invalid result type for eth_blockNumber")
+		}
+		
+		blockNumber, err = parseHex(result)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse block number: %w", err)
+		}
 	}
 
 	// Common debug log
@@ -597,3 +670,4 @@ func (h *HealthChecker) RemoveTaint() {
 func (h *HealthChecker) BlockNumber() uint64 {
 	return h.blockNumber.Load()
 }
+

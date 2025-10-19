@@ -2,6 +2,7 @@ package rpcgateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,12 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kewlfft/rpc-gateway/internal/metrics"
 	"github.com/kewlfft/rpc-gateway/internal/proxy"
-	"github.com/pkg/errors"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 type RPCGateway struct {
@@ -30,10 +29,10 @@ type RPCGateway struct {
 func (r *RPCGateway) Start(c context.Context) error {
 	// Check if ports are available
 	if err := checkPortAvailability(r.config.Port); err != nil {
-		return errors.Wrap(err, "rpc-gateway port not available")
+		return fmt.Errorf("rpc-gateway port not available: %w", err)
 	}
 	if err := checkPortAvailability(fmt.Sprintf("%d", r.config.Metrics.Port)); err != nil {
-		return errors.Wrap(err, "metrics port not available")
+		return fmt.Errorf("metrics port not available: %w", err)
 	}
 
 	// Start all health check managers (Start is non-blocking)
@@ -121,7 +120,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	for i, proxyConfig := range config.Proxies {
 		timeout, err := time.ParseDuration(proxyConfig.Timeout)
 		if err != nil {
-			return nil, errors.Wrap(err, "invalid timeout")
+			return nil, fmt.Errorf("invalid timeout: %w", err)
 		}
 
 		// Create proxy configuration
@@ -154,7 +153,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		slog.Info("providers randomized at startup")
 	}
 
-	r := chi.NewRouter()
+	r := http.NewServeMux()
 
 	// Handle each proxy path
 	for path, p := range proxies {

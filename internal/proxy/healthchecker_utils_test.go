@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-http-utils/headers"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -19,8 +18,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 
 		server := httptest.NewServer(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if assert.Contains(t, r.Header, headers.ContentType) {
-					assert.Equal(t, "application/json", r.Header.Get(headers.ContentType))
+				if assert.Contains(t, r.Header, "Content-Type") {
+					assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 				}
 
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -40,8 +39,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 
 		server := httptest.NewServer(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if assert.Contains(t, r.Header, headers.ContentType) {
-					assert.Equal(t, "application/json", r.Header.Get(headers.ContentType))
+				if assert.Contains(t, r.Header, "Content-Type") {
+					assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 				}
 
 				w.Write([]byte(`{{}`))
@@ -62,8 +61,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 
 		server := httptest.NewServer(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if assert.Contains(t, r.Header, headers.ContentType) {
-					assert.Equal(t, "application/json", r.Header.Get(headers.ContentType))
+				if assert.Contains(t, r.Header, "Content-Type") {
+					assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 				}
 				<-time.After(time.Second * 3)
 

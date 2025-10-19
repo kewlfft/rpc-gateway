@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/pkg/errors"
 )
 
 
@@ -17,18 +15,32 @@ type JSONRPCError struct {
 	Message string `json:"message"`
 }
 
-type JSONRPCResponse struct {
-	Jsonrpc string        `json:"jsonrpc"`
-	ID      int           `json:"id"`
-	Result  string        `json:"result,omitempty"`
-	Error   *JSONRPCError `json:"error,omitempty"`
+// JSONRPCResponse is defined in healthchecker.go
+
+// parseHex parses a hex string to uint64 (optimized)
+func parseHex(hexStr string) (uint64, error) {
+	n := len(hexStr)
+	if n == 0 {
+		return 0, nil
+	}
+	if n > 2 && hexStr[0] == '0' && (hexStr[1] == 'x' || hexStr[1] == 'X') {
+		hexStr = hexStr[2:]
+		if len(hexStr) == 0 {
+			return 0, nil
+		}
+	}
+	return strconv.ParseUint(hexStr, 16, 64)
 }
 
-func hexToUint(hexString string) (uint64, error) {
-	if len(hexString) >= 2 && hexString[:2] == "0x" {
-		hexString = hexString[2:]
+// isBrokenPipeError checks if an error is a broken pipe error
+func isBrokenPipeError(err error) bool {
+	if err == nil {
+		return false
 	}
-	return strconv.ParseUint(hexString, 16, 64)
+	errStr := err.Error()
+	return strings.Contains(errStr, "broken pipe") || 
+		   strings.Contains(errStr, "connection reset by peer") ||
+		   strings.Contains(errStr, "use of closed network connection")
 }
 
 // [constructor preamble&callvalue check][function dispatcher][selector matched function logic][STOP]
@@ -86,9 +98,14 @@ func performGasLeftCall(ctx context.Context, client *http.Client, url string) (u
 		return 0, fmt.Errorf("performGasLeftCall: rpc error: code=%d message=%s", result.Error.Code, result.Error.Message)
 	}
 	if result.Result == "" {
-		return 0, errors.New("performGasLeftCall: empty result")
+		return 0, fmt.Errorf("performGasLeftCall: empty result")
 	}
 
-	return hexToUint(result.Result)
+	// Type assert result to string
+	resultStr, ok := result.Result.(string)
+	if !ok {
+		return 0, fmt.Errorf("invalid result type")
+	}
+	return parseHex(resultStr)
 }
 
