@@ -119,6 +119,15 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		client:     client,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
+			Transport: &http.Transport{
+				// Connection pooling optimizations for health checks
+				MaxIdleConns:          50,   // Lower than main proxy since health checks are less frequent
+				MaxIdleConnsPerHost:   5,    // Lower than main proxy for health checks
+				IdleConnTimeout:       30 * time.Second, // Shorter timeout for health checks
+				ResponseHeaderTimeout: config.Timeout,    // Use same timeout as client
+				DisableCompression:    true, // Prevent auto-decompression so we can forward gzip as-is
+				ForceAttemptHTTP2:     true, // Enable HTTP/2 for better multiplexing
+			},
 		},
 		stopCh:     make(chan struct{}),
 		taintRemoveCh: make(chan struct{}, 1),
