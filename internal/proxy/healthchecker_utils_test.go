@@ -27,7 +27,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 		)
 		defer server.Close()
 
-		gas, err := performGasLeftCall(context.TODO(), &http.Client{}, server.URL)
+		client := CreateOptimizedHTTPClient("test-client", 30*time.Second)
+		gas, err := performGasLeftCall(context.TODO(), client, server.URL)
 
 		assert.Zero(t, gas)
 		assert.Error(t, err)
@@ -49,7 +50,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 		)
 		defer server.Close()
 
-		gas, err := performGasLeftCall(context.TODO(), &http.Client{}, server.URL)
+		client := CreateOptimizedHTTPClient("test-client", 30*time.Second)
+		gas, err := performGasLeftCall(context.TODO(), client, server.URL)
 
 		assert.Zero(t, gas)
 		assert.Error(t, err)
@@ -74,7 +76,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 		timeout, cancel := context.WithTimeout(context.TODO(), time.Second*1)
 		defer cancel()
 
-		gas, err := performGasLeftCall(timeout, &http.Client{}, server.URL)
+		client := CreateOptimizedHTTPClient("test-client-timeout", 30*time.Second)
+		gas, err := performGasLeftCall(timeout, client, server.URL)
 
 		assert.Zero(t, gas)
 		assert.Error(t, err)

@@ -70,23 +70,16 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		return nil, fmt.Errorf("failed to create health check manager: %w", err)
 	}
 
+	// Create optimized HTTP client using shared connection pool with default settings
+	clientKey := "proxy-" + config.Path
+	client := CreateOptimizedHTTPClient(clientKey, config.Timeout)
+
 	proxy := &Proxy{
 		hcm:       hcm,
 		timeout:   config.Timeout,
 		logger:    config.Logger,
 		chainType: config.ChainType,
-		client: &http.Client{
-			Timeout: config.Timeout,
-			Transport: &http.Transport{
-				// Connection pooling optimizations
-				MaxIdleConns:          1024,  // Increased from default 100
-				MaxIdleConnsPerHost:   256,   // Increased from default 2
-				IdleConnTimeout:       90 * time.Second, // Keep connections alive longer
-				ResponseHeaderTimeout: config.Timeout,    // Use same timeout as client
-				DisableCompression:    true, // Prevent auto-decompression so we can forward gzip as-is
-				ForceAttemptHTTP2:     true, // Enable HTTP/2 for better multiplexing
-			},
-		},
+		client:    client,
 	}
 
 	// Create providers for each target

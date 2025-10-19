@@ -168,20 +168,13 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		config.ConnectionType = "http"
 	}
 
+	// Create optimized HTTP client for health checks using shared connection pool
+	// Use proxy path for proper isolation (health checkers are per-proxy)
+	httpClient := CreateHealthCheckHTTPClientForProxy(config.Path, config.Name, config.Timeout)
+
 	healthchecker := &HealthChecker{
 		config:     config,
-		httpClient: &http.Client{
-			Timeout: config.Timeout,
-			Transport: &http.Transport{
-				// Connection pooling optimizations for health checks
-				MaxIdleConns:          50,   // Lower than main proxy since health checks are less frequent
-				MaxIdleConnsPerHost:   5,    // Lower than main proxy for health checks
-				IdleConnTimeout:       30 * time.Second, // Shorter timeout for health checks
-				ResponseHeaderTimeout: config.Timeout,    // Use same timeout as client
-				DisableCompression:    true, // Prevent auto-decompression so we can forward gzip as-is
-				ForceAttemptHTTP2:     true, // Enable HTTP/2 for better multiplexing
-			},
-		},
+		httpClient: httpClient,
 		stopCh:     make(chan struct{}),
 		taintRemoveCh: make(chan struct{}, 1),
 		taint: TaintState{
