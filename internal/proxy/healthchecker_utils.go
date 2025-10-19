@@ -15,22 +15,36 @@ type JSONRPCError struct {
 	Message string `json:"message"`
 }
 
-// JSONRPCResponse is defined in healthchecker.go
-
 // parseHex parses a hex string to uint64 (optimized)
-func parseHex(hexStr string) (uint64, error) {
-	n := len(hexStr)
-	if n == 0 {
+func parseHex(s string) (uint64, error) {
+	if len(s) == 0 {
 		return 0, nil
 	}
-	if n > 2 && hexStr[0] == '0' && (hexStr[1] == 'x' || hexStr[1] == 'X') {
-		hexStr = hexStr[2:]
-		if len(hexStr) == 0 {
+
+	// Strip 0x/0X prefix fast
+	if len(s) > 1 && s[0] == '0' && (s[1]|0x20) == 'x' { // lowercase via bit trick
+		s = s[2:]
+		if len(s) == 0 {
 			return 0, nil
 		}
 	}
-	return strconv.ParseUint(hexStr, 16, 64)
+
+	// Fast validation (byte loop, no bounds branches)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9',
+			c >= 'a' && c <= 'f',
+			c >= 'A' && c <= 'F':
+			continue
+		default:
+			return 0, fmt.Errorf("invalid hex char '%c' in \"%s\"", c, s)
+		}
+	}
+
+	return strconv.ParseUint(s, 16, 64)
 }
+
 
 // isBrokenPipeError checks if an error is a broken pipe error
 func isBrokenPipeError(err error) bool {
