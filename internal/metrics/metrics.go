@@ -10,17 +10,30 @@ import (
 
 type Server struct {
 	server *http.Server
+	enabled bool
 }
 
 func (s *Server) Start() error {
+	if !s.enabled {
+		return nil
+	}
 	return s.server.ListenAndServe()
 }
 
 func (s *Server) Stop() error {
+	if !s.enabled {
+		return nil
+	}
 	return s.server.Close()
 }
 
 func NewServer(config Config) *Server {
+	if !config.IsEnabled() {
+		return &Server{
+			enabled: false,
+		}
+	}
+
 	r := http.NewServeMux()
 
 	// Add health check endpoint
@@ -38,5 +51,6 @@ func NewServer(config Config) *Server {
 			ReadTimeout:       time.Second * 15,
 			ReadHeaderTimeout: time.Second * 5,
 		},
+		enabled: true,
 	}
 }

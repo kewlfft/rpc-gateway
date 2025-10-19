@@ -31,8 +31,10 @@ func (r *RPCGateway) Start(c context.Context) error {
 	if err := checkPortAvailability(r.config.Port); err != nil {
 		return fmt.Errorf("rpc-gateway port not available: %w", err)
 	}
-	if err := checkPortAvailability(fmt.Sprintf("%d", r.config.Metrics.Port)); err != nil {
-		return fmt.Errorf("metrics port not available: %w", err)
+	if r.config.Metrics.IsEnabled() {
+		if err := checkPortAvailability(fmt.Sprintf("%d", r.config.Metrics.Port)); err != nil {
+			return fmt.Errorf("metrics port not available: %w", err)
+		}
 	}
 
 	// Start all health check managers (Start is non-blocking)
@@ -42,12 +44,14 @@ func (r *RPCGateway) Start(c context.Context) error {
 		}
 	}
 
-	// Start metrics server
-	go func() {
-		if err := r.metrics.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("metrics server error", "error", err)
-		}
-	}()
+	// Start metrics server if enabled
+	if r.config.Metrics.IsEnabled() {
+		go func() {
+			if err := r.metrics.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("metrics server error", "error", err)
+			}
+		}()
+	}
 
 	// Start main server
 	go func() {
@@ -79,9 +83,11 @@ func (r *RPCGateway) Stop(c context.Context) error {
 		slog.Error("error stopping rpc-gateway server", "error", err)
 	}
 
-	// Stop metrics server
-	if err := r.metrics.Stop(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("error stopping metrics server", "error", err)
+	// Stop metrics server if enabled
+	if r.config.Metrics.IsEnabled() {
+		if err := r.metrics.Stop(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("error stopping metrics server", "error", err)
+		}
 	}
 
 	// Stop health check managers last
@@ -114,6 +120,16 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	logger := slog.New(
 		slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 			Level: logLevel,
+			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+				// Convert time to UTC
+				if a.Key == slog.TimeKey {
+					return slog.Attr{
+						Key:   a.Key,
+						Value: slog.TimeValue(a.Value.Time().UTC()),
+					}
+				}
+				return a
+			},
 		}))
 
 	// Create health check managers and proxies for each proxy config
@@ -200,11 +216,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		config:  config,
 		proxies: proxies,
 		hcms:    hcms,
-		metrics: metrics.NewServer(
-			metrics.Config{
-				Port: config.Metrics.Port,
-			},
-		),
+		metrics: metrics.NewServer(config.Metrics),
 		server: &http.Server{
 			Addr:              fmt.Sprintf(":%s", config.Port),
 			Handler:           r,
