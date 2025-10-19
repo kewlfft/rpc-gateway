@@ -1,6 +1,6 @@
 # Binary name
 BINARY_NAME=rpcgateway
-VERSION=0.4.22
+VERSION=0.4.23
 
 # Git information - with fallbacks
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
