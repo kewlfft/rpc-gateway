@@ -47,10 +47,10 @@ var (
 
 // TaintState represents the current state of a health checker
 type TaintState struct {
-	lastRemoval atomic.Int64  // Unix nanoseconds
-	waitTime    atomic.Int64  // Duration in nanoseconds
+	lastRemoval  time.Time
+	waitTime     time.Duration
 	removalTimer *time.Timer
-	config      TaintConfig
+	config       TaintConfig
 }
 
 type HealthCheckerConfig struct {
@@ -133,10 +133,9 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		taintRemoveCh: make(chan struct{}, 1),
 		taint: TaintState{
 			config:   healthCheckTaintConfig,
+			waitTime: healthCheckTaintConfig.InitialWaitTime,
 		},
 	}
-
-	healthchecker.taint.waitTime.Store(int64(healthCheckTaintConfig.InitialWaitTime))
 
 	healthchecker.config.Logger.Debug("Health checker created", 
 		"provider", config.Name, 
@@ -413,10 +412,10 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 		return
 	}
 
-	c, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
 	defer cancel()
 
-	_, err := h.checkGasLeft(c)
+	_, err := h.checkGasLeft(ctx)
 	if err != nil {
 		h.config.Logger.Info("provider tainted due to gas left check failure",
 			"connectionType", h.config.ConnectionType,
@@ -436,32 +435,36 @@ func (h *HealthChecker) Start(c context.Context) {
 		"provider", h.config.Name,
 		"path", h.config.Path)
 	
+	// Start the health checker in a separate goroutine to avoid blocking
+	go h.runHealthChecker(c)
+}
+
+// runHealthChecker runs the main health checking loop in a separate goroutine
+func (h *HealthChecker) runHealthChecker(c context.Context) {
 	// Create independent context for health checking to avoid cascade
 	healthCtx, healthCancel := context.WithCancel(context.Background())
 	defer healthCancel()
-	
-	// Graceful shutdown goroutine
-	go func() {
-		<-c.Done()
-		h.config.Logger.Info("health checker shutting down gracefully", 
-			"provider", h.config.Name,
-			"path", h.config.Path)
-		healthCancel()
-	}()
 	
 	timer := time.NewTimer(h.config.InitialDelay)
 	defer timer.Stop()
 
 	for {
 		select {
+		case <-c.Done():
+			// Context cancelled - shutdown gracefully
+			h.config.Logger.Info("health checker shutting down gracefully", 
+				"provider", h.config.Name,
+				"path", h.config.Path)
+			h.shutdown()
+			return
 		case <-healthCtx.Done():
-			if !h.stopped.Swap(true) {
-				close(h.stopCh)
-			}
+			// Health context cancelled
+			h.shutdown()
 			return
 		case <-timer.C:
-			// Do the first health check
+			// Perform health check
 			h.CheckAndSetHealth()
+			
 			// Reset timer for regular interval
 			timer.Reset(h.config.Interval)
 		case <-h.taintRemoveCh:
@@ -476,14 +479,19 @@ func (h *HealthChecker) Start(c context.Context) {
 	}
 }
 
-func (h *HealthChecker) Stop(_ context.Context) error {
+// shutdown performs graceful shutdown with atomic state management
+func (h *HealthChecker) shutdown() {
 	if !h.stopped.Swap(true) {
 		close(h.stopCh)
-		// Signal cleanup of taint removal timer
-		select {
-		case h.taintRemoveCh <- struct{}{}:
-		default:
-		}
+	}
+}
+
+func (h *HealthChecker) Stop(_ context.Context) error {
+	h.shutdown()
+	// Signal cleanup of taint removal timer
+	select {
+	case h.taintRemoveCh <- struct{}{}:
+	default:
 	}
 	return nil
 }
@@ -504,27 +512,24 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		}
 	}
 
-	// Phase 1: Immediate atomic taint
+	// Immediate atomic taint
 	h.isTainted.Store(true)
 
-	// Phase 2: Calculate timing values
+	// Update taint state under lock
+	h.mu.Lock()
+	
+	// Calculate timing values
 	now := time.Now()
-	nowNanos := now.UnixNano()
-	lastRemovalNanos := h.taint.lastRemoval.Load()
-
 	var wait time.Duration
-	if nowNanos - lastRemovalNanos <= int64(cfg.ResetWaitDuration) {
-		wait = time.Duration(h.taint.waitTime.Load()) * 2
+	if now.Sub(h.taint.lastRemoval) <= cfg.ResetWaitDuration {
+		wait = h.taint.waitTime * 2
 		if wait > cfg.MaxWaitTime {
 			wait = cfg.MaxWaitTime
 		}
 	} else {
 		wait = cfg.InitialWaitTime
 	}
-
-	// Phase 3: Minimal lock section for timer and config update
-	h.mu.Lock()
-
+	
 	// Cancel old timer safely
 	if oldTimer := h.taint.removalTimer; oldTimer != nil {
 		if !oldTimer.Stop() {
@@ -544,15 +549,13 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		}
 	})
 	h.taint.config = cfg
+	h.taint.lastRemoval = now
+	h.taint.waitTime = wait
 
 	h.mu.Unlock()
 
-	// Phase 4: Atomic write of timing data after unlock
-	h.taint.lastRemoval.Store(nowNanos)
-	h.taint.waitTime.Store(int64(wait))
-
-	// Phase 5: Logging
-	nextRetry := time.Unix(0, nowNanos+int64(wait))
+	// Logging
+	nextRetry := now.Add(wait)
 	h.config.Logger.Info("provider tainted",
 		"conn", h.config.ConnectionType,
 		"name", h.config.Name,
@@ -574,12 +577,12 @@ func (h *HealthChecker) TaintHealthCheck() {
 }
 
 func (h *HealthChecker) RemoveTaint() {
-	// Update atomic state first since it's lock-free
+	// Update atomic state
 	h.isTainted.Store(false)
-	h.taint.lastRemoval.Store(time.Now().UnixNano())
 	
-	// Only lock for timer cleanup
+	// Update taint state under lock
 	h.mu.Lock()
+	h.taint.lastRemoval = time.Now()
 	h.taint.removalTimer = nil
 	h.mu.Unlock()
 	
@@ -588,7 +591,7 @@ func (h *HealthChecker) RemoveTaint() {
 		"connectionType", h.config.ConnectionType,
 		"path", h.config.Path,
 		"name", h.config.Name,
-		"nextTaintWait", time.Duration(h.taint.waitTime.Load()).Seconds())
+		"nextTaintWait", h.taint.waitTime.Seconds())
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {
