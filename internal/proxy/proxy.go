@@ -200,7 +200,8 @@ func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, s
 }
 
 // forwardRequest handles both standard and Tron requests with direct streaming
-func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) bool {
+// Returns: true if successful, false if failed and retryable, -1 if failed and not retryable (client disconnect)
+func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) int {
 	name := target.Name()
 
 	// Create a new context with timeout for this specific request to avoid context cancellation cascade
@@ -217,7 +218,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"path", r.URL.Path,
 			"provider_url", urlPath)
 		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
-		return false
+		return 0
 	}
 
 	// Copy headers from original request
@@ -252,7 +253,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 				"method", r.Method)
 		}
 		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
-		return false
+		return 0
 	}
 	defer resp.Body.Close()
 
@@ -264,7 +265,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"method", r.Method,
 			"url", urlPath)
 		p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
-		return false
+		return 0
 	}
 
 	if err := p.copyResponse(w, resp); err != nil {
@@ -274,8 +275,8 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 				"error", err,
 				"url", urlPath,
 				"method", r.Method)
-			// Don't taint provider for client disconnection
-			return false
+			// Don't taint provider for client disconnection and don't retry
+			return -1
 		}
 		
 		p.logger.Error("Failed to copy response",
@@ -283,11 +284,11 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"url", urlPath,
 			"method", r.Method)
 		p.handleProviderFailure(name, r, start, resp.StatusCode, err)
-		return false
+		return 0
 	}
 
 	p.logSuccessfulRequest(r, name, resp.StatusCode, start)
-	return true
+	return 1
 }
 
 // Update ServeHTTP to use the unified forwardRequest
@@ -342,7 +343,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				url += r.URL.Path
 			}
 
-			if p.forwardRequest(w, r, bodyBytes, start, target, url) {
+			result := p.forwardRequest(w, r, bodyBytes, start, target, url)
+			if result == 1 {
+				// Success
+				return
+			} else if result == -1 {
+				// Client disconnected - don't retry
 				return
 			}
 			
