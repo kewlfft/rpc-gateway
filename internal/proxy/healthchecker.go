@@ -420,7 +420,7 @@ func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 			"path", h.config.Path)
 		return gasLeft, err
 	}
-	h.config.Logger.Debug("fetch gas left completed", 
+	h.config.Logger.Debug("gas left fetched", 
 		"connectionType", h.config.ConnectionType,
 		"provider", h.config.Name, 
 		"gasLeft", gasLeft, 
