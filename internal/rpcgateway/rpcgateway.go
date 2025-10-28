@@ -147,7 +147,6 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			HealthChecks:    proxyConfig.HealthChecks,
 			Targets:         proxyConfig.Targets,
 			Logger:          logger,
-			DisableHealthChecks: true, // Always disable health checks in NewProxy
 			PathIndex:       i, // Pass the path index for incremental staggering
 		}
 

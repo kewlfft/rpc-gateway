@@ -48,8 +48,6 @@ type Config struct {
 	Targets []NodeProviderConfig `yaml:"targets"`
 	// Logger instance
 	Logger *slog.Logger
-	// If true, health checks will not be started
-	DisableHealthChecks bool
 	// Index of the path for incremental staggering of health checks
 	PathIndex int
 }
