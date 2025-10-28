@@ -125,11 +125,12 @@ func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, messa
 // copyResponse copies headers, status code, and body from the source response to the target response writer
 func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 	// Check if headers have already been written to avoid "superfluous response.WriteHeader call"
-	if w.Header().Get("Content-Type") == "" {
+	if w.Header().Get("X-Status-Set") == "" {
 		// Copy headers only if they haven't been written yet
 		for k, v := range resp.Header {
 			w.Header()[k] = v
 		}
+		w.Header().Set("X-Status-Set", "true")
 		w.WriteHeader(resp.StatusCode)
 	}
 
@@ -316,7 +317,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	healthyProviders := p.getHealthyProviders(connType)
 	
 	if len(healthyProviders) == 0 {
-		p.writeErrorResponse(w, r, "No healthy providers available", http.StatusServiceUnavailable)
+		p.writeErrorResponse(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -357,7 +358,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	p.writeErrorResponse(w, r, "All providers failed", http.StatusServiceUnavailable)
+	p.writeErrorResponse(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable)
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy

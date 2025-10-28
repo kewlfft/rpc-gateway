@@ -21,10 +21,6 @@ proxies:
         connection:
           http:
             url: "https://1rpc.io/eth"
-      - name: "Ankr"
-        connection:
-          http:
-            url: "https://rpc.ankr.com/eth"
       - name: "publicnode"
         connection:
           http:

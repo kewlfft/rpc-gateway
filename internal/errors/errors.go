@@ -27,15 +27,11 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 
 	w.Header().Set("Content-Type", "application/json")
 	
-	// Check if headers have already been written to avoid "superfluous response.WriteHeader call"
-	// We can't easily detect if WriteHeader was called, so we'll use a defer with recover
-	defer func() {
-		if r := recover(); r != nil {
-			// Headers were already written, ignore the panic
-		}
-	}()
-	
-	w.WriteHeader(status)
+	// Check if headers have already been written by checking if status was set
+	if w.Header().Get("X-Status-Set") == "" {
+		w.Header().Set("X-Status-Set", "true")
+		w.WriteHeader(status)
+	}
 
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"jsonrpc": "2.0",
