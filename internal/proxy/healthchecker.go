@@ -413,7 +413,7 @@ func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 
 	gasLeft, err := performGasLeftCall(c, h.httpClient, h.config.URL)
 	if err != nil {
-		h.config.Logger.Error("could not fetch gas left", 
+		h.config.Logger.Error("gas call failed", 
 			"connectionType", h.config.ConnectionType,
 			"error", err,
 			"provider", h.config.Name,
