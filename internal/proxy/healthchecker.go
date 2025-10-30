@@ -104,9 +104,9 @@ var (
 
 	// HTTP request taint configuration (faster cycle)
 	httpTaintConfig = TaintConfig{
-		InitialWaitTime:   time.Second * 5,
-		MaxWaitTime:       time.Second * 30,
-		ResetWaitDuration: time.Second * 15,
+		InitialWaitTime:   time.Second * 10,
+		MaxWaitTime:       time.Second * 40,
+		ResetWaitDuration: time.Second * 20,
 		Reason:           "HTTP error",
 	}
 )
