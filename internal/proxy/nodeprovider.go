@@ -15,7 +15,7 @@ type NodeProvider struct {
 func NewNodeProvider(config NodeProviderConfig, timeout time.Duration, logger *slog.Logger) *NodeProvider {
 	var wsProxy http.Handler
 	if config.Connection.WebSocket.URL != "" {
-		wsProxy = NewWebSocketProxy(config.Connection.WebSocket.URL, logger)
+		wsProxy = NewWebSocketProxy(config.Connection.WebSocket.URL, timeout, logger)
 	}
 
 	return &NodeProvider{

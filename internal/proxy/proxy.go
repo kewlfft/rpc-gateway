@@ -340,11 +340,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
-				// Test connection BEFORE upgrading (upgrade commits HTTP response)
-				if err := wsProxy.TestConnection(); err != nil {
-					p.logger.Debug("WebSocket connection test failed",
-						"provider", name,
-						"error", err)
+				// Create upstream connection BEFORE upgrading (upgrade commits HTTP response)
+				// If this fails, we can try next provider without committing to the client
+				if targetConn := wsProxy.createNewConnection(); targetConn == nil {
+					p.logger.Debug("WebSocket connection failed",
+						"provider", name)
 					failedProviders[name] = true
 					if hc := p.hcm.GetHealthChecker(name, connType); hc != nil {
 						hc.TaintHTTP()
@@ -354,9 +354,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						"failed_count", len(failedProviders),
 						"total_providers", len(healthyProviders))
 					continue // Try next provider
+				} else {
+					// Close test connection - real one will be created in ServeHTTP
+					targetConn.Close()
 				}
 
-				// Connection test passed - safe to upgrade
+				// Connection successful - safe to upgrade
 				target.ServeHTTP(w, r)
 				return
 			}

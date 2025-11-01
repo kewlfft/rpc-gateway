@@ -47,7 +47,7 @@ func TestWebSocketProxy_UnsubscribeAll(t *testing.T) {
 	wsURL := u.String()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	proxy := NewWebSocketProxy(wsURL, logger)
+	proxy := NewWebSocketProxy(wsURL, 45*time.Second, logger)
 
 	// Simulate tracked subscriptions
 	subIDs := []string{"sub1", "sub2", "sub3"}

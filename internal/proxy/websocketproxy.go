@@ -14,7 +14,6 @@ import (
 
 const (
 	bufferSize      = 16384
-	handshakeTimeout = 45 * time.Second
 	pingInterval     = 15 * time.Second
 	pingTimeout      = 2 * time.Second
 )
@@ -28,6 +27,7 @@ var upgrader = websocket.Upgrader{
 type WebSocketProxy struct {
 	targetURL string
 	logger    *slog.Logger
+	timeout   time.Duration // Timeout for connection attempts
 	// Subscription tracking
 	subscriptions map[string]bool
 	mu            sync.RWMutex
@@ -36,10 +36,11 @@ type WebSocketProxy struct {
 	poolMu   sync.Mutex
 }
 
-func NewWebSocketProxy(targetURL string, logger *slog.Logger) *WebSocketProxy {
+func NewWebSocketProxy(targetURL string, timeout time.Duration, logger *slog.Logger) *WebSocketProxy {
 	return &WebSocketProxy{
-		targetURL: targetURL, 
-		logger: logger,
+		targetURL: targetURL,
+		logger:    logger,
+		timeout:   timeout,
 		subscriptions: make(map[string]bool),
 		connPool: make(chan *websocket.Conn, 5), // Pool of 5 connections
 	}
@@ -353,28 +354,10 @@ func (p *WebSocketProxy) returnConnection(conn *websocket.Conn) {
 	}
 }
 
-// TestConnection tests if the upstream WebSocket connection can be established
-// This allows failover logic to test connections before committing the client upgrade
-func (p *WebSocketProxy) TestConnection() error {
-	dialer := websocket.Dialer{
-		HandshakeTimeout:  handshakeTimeout,
-		ReadBufferSize:    bufferSize,
-		WriteBufferSize:   bufferSize,
-		EnableCompression: true,
-	}
-
-	conn, _, err := dialer.Dial(p.targetURL, nil)
-	if err != nil {
-		return err
-	}
-	conn.Close()
-	return nil
-}
-
 // createNewConnection creates a new WebSocket connection
 func (p *WebSocketProxy) createNewConnection() *websocket.Conn {
 	dialer := websocket.Dialer{
-		HandshakeTimeout:  handshakeTimeout,
+		HandshakeTimeout:  p.timeout,
 		ReadBufferSize:    bufferSize,
 		WriteBufferSize:   bufferSize,
 		EnableCompression: true,
