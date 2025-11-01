@@ -433,13 +433,13 @@ func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 // - `eth_call` - to get the gas left (runs sequentially after block number check)
 // And sets the health status based on the responses.
 func (h *HealthChecker) CheckAndSetHealth() {
+	// Fast path: if tainted, skip entirely (atomic read, very fast)
 	if h.IsTainted() {
 		return
 	}
+
 	// Run block number check first, then gas left check sequentially
 	// This reduces concurrent load and prevents wasting requests if block number fails
-	// Note: These run synchronously but CheckAndSetHealth() itself is called from a goroutine
-	// so it doesn't block the main select loop
 	h.checkAndSetBlockNumberHealth()
 	// Only run gas left check after block number completes successfully
 	if !h.IsTainted() {
@@ -535,11 +535,12 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 			h.shutdown()
 			return
 		case <-timer.C:
+			// Reset timer BEFORE starting health check to prevent overlapping intervals
+			// This ensures the next interval starts from now, not after check completes
+			timer.Reset(h.config.Interval)
+			
 			// Perform health check
 			h.CheckAndSetHealth()
-			
-			// Reset timer for regular interval
-			timer.Reset(h.config.Interval)
 		case <-h.taintRemoveCh:
 			// Clean up taint removal timer
 			h.mu.Lock()

@@ -43,7 +43,7 @@ func HealthCheckHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 	return HTTPClientSettings{
 		Timeout:              timeout,
 		MaxIdleConns:         100,  // Shared across all providers in a proxy path
-		MaxIdleConnsPerHost:  10,   // Shared per host across all providers in a proxy path
+		MaxIdleConnsPerHost:  15,   // Shared per host across all providers in a proxy path
 		IdleConnTimeout:      70 * time.Second, // At least as long as the longest health check interval
 		ResponseHeaderTimeout: timeout,
 		DisableCompression:   true,
