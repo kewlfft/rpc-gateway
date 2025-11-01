@@ -169,7 +169,7 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 	}
 
 	// Create optimized HTTP client for health checks using shared connection pool
-	// Use proxy path for proper isolation (health checkers are per-proxy)
+	// All providers in the same proxy path share one HTTP client and connection pool
 	httpClient := CreateHealthCheckHTTPClientForProxy(config.Path, config.Name, config.Timeout)
 
 	healthchecker := &HealthChecker{

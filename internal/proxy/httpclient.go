@@ -42,9 +42,9 @@ func DefaultHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 func HealthCheckHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 	return HTTPClientSettings{
 		Timeout:              timeout,
-		MaxIdleConns:         50,   // Lower than main proxy since health checks are less frequent
-		MaxIdleConnsPerHost:  40,    // Lower than main proxy for health checks
-		IdleConnTimeout:      30 * time.Second, // Shorter timeout for health checks
+		MaxIdleConns:         100,  // Shared across all providers in a proxy path
+		MaxIdleConnsPerHost:  10,   // Shared per host across all providers in a proxy path
+		IdleConnTimeout:      70 * time.Second, // At least as long as the longest health check interval
 		ResponseHeaderTimeout: timeout,
 		DisableCompression:   true,
 		ForceAttemptHTTP2:    true,
@@ -195,10 +195,11 @@ func CreateOptimizedHTTPClient(key string, timeout time.Duration) *http.Client {
 }
 
 
-// CreateHealthCheckHTTPClientForProxy creates a health check client for a specific proxy
+// CreateHealthCheckHTTPClientForProxy creates a shared health check client for all providers in a proxy path
 func CreateHealthCheckHTTPClientForProxy(proxyPath string, providerName string, timeout time.Duration) *http.Client {
 	manager := globalFactory.GetManagerForProxy(proxyPath)
 	config := HealthCheckHTTPClientConfig(timeout)
-	key := "health-" + providerName
+	// Share one client per proxy path - all providers in the same path share the connection pool
+	key := "health-" + proxyPath
 	return manager.GetOrCreateClient(key, config)
 }
