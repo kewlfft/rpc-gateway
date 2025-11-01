@@ -60,7 +60,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 		logger:   config.Logger,
 		path:     config.Path,
 		// Use incremental staggering
-		initialDelay: time.Duration(config.PathIndex * 250) * time.Millisecond,
+		initialDelay: time.Duration(config.PathIndex * 200) * time.Millisecond,
 		checkerMap: make(map[string]*HealthChecker),
 	}
 
