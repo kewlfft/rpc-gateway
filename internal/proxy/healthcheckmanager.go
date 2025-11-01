@@ -84,6 +84,11 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				continue
 			}
 
+			initialDelay := hcm.initialDelay
+			if conn.connType == "websocket" {
+				initialDelay += 500 * time.Millisecond // Stagger WebSocket after HTTP checks
+			}
+
 			checker, err := NewHealthChecker(HealthCheckerConfig{
 				Logger:           config.Logger,
 				URL:              conn.url,
@@ -95,7 +100,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				ConnectionType:  conn.connType,
 				BlockDiffThreshold: uint(config.HealthChecks.BlockDiffThreshold),
 				APIKey:            target.Connection.HTTP.APIKey,
-				InitialDelay:      hcm.initialDelay, // Pass the path-level initial delay
+				InitialDelay:      initialDelay,
 			})
 			if err != nil {
 				// For WebSocket connections, log a warning and continue instead of failing
