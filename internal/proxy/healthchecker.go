@@ -203,9 +203,9 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 
 	switch {
 	case h.config.ConnectionType == "websocket":
-		// Create a custom dialer with more robust TLS settings
+		// Create a custom dialer with timeout from config
 		dialer := websocket.Dialer{
-			HandshakeTimeout: 30 * time.Second,
+			HandshakeTimeout: h.config.Timeout,
 			ReadBufferSize:   16384,
 			WriteBufferSize:  16384,
 			EnableCompression: true,
@@ -237,8 +237,11 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		}
 		defer conn.Close()
 
-		// Set a consistent deadline for the entire websocket check
-		deadline := time.Now().Add(30 * time.Second)
+		// Set deadline based on context timeout
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			deadline = time.Now().Add(h.config.Timeout)
+		}
 		conn.SetReadDeadline(deadline)
 
 		if h.config.ChainType == "solana" {
