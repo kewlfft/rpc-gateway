@@ -322,7 +322,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Track failed providers to avoid retrying the same provider
 	failedProviders := make(map[string]bool, len(healthyProviders))
-	maxRetries := 2 // Allow up to 2 retries for context cancellation
+	maxRetries := 1 // Allow up to 1 retry for context cancellation
 	
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		for _, target := range healthyProviders {
