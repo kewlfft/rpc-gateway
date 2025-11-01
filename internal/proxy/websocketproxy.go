@@ -306,6 +306,24 @@ func (p *WebSocketProxy) returnConnection(conn *websocket.Conn) {
 	}
 }
 
+// TestConnection tests if the upstream WebSocket connection can be established
+// This allows failover logic to test connections before committing the client upgrade
+func (p *WebSocketProxy) TestConnection() error {
+	dialer := websocket.Dialer{
+		HandshakeTimeout:  handshakeTimeout,
+		ReadBufferSize:    bufferSize,
+		WriteBufferSize:   bufferSize,
+		EnableCompression: true,
+	}
+
+	conn, _, err := dialer.Dial(p.targetURL, nil)
+	if err != nil {
+		return err
+	}
+	conn.Close()
+	return nil
+}
+
 // createNewConnection creates a new WebSocket connection
 func (p *WebSocketProxy) createNewConnection() *websocket.Conn {
 	dialer := websocket.Dialer{

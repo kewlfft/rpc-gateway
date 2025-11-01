@@ -334,6 +334,25 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if isWebSocket {
+				wsProxy := target.GetWebSocketProxy()
+				if wsProxy == nil {
+					failedProviders[name] = true
+					continue
+				}
+
+				// Test connection BEFORE upgrading (upgrade commits HTTP response)
+				if err := wsProxy.TestConnection(); err != nil {
+					p.logger.Debug("WebSocket connection test failed",
+						"provider", name,
+						"error", err)
+					failedProviders[name] = true
+					if hc := p.hcm.GetHealthChecker(name, connType); hc != nil {
+						hc.TaintHTTP()
+					}
+					continue // Try next provider
+				}
+
+				// Connection test passed - safe to upgrade
 				target.ServeHTTP(w, r)
 				return
 			}

@@ -191,17 +191,55 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 	// Create a test server that supports compression
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request headers and body
-		if r.Header.Get("Content-Encoding") != "gzip" {
-			t.Errorf("Expected Content-Encoding: gzip, got: %s", r.Header.Get("Content-Encoding"))
-		}
-
-		// Read and verify the request body
+		// Read request body
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("Failed to read request body: %v", err)
 		}
-		if len(body) == 0 {
+
+		// Check if this is a health check request (no gzip encoding)
+		contentEncoding := r.Header.Get("Content-Encoding")
+		if contentEncoding != "gzip" {
+			// Likely a health check request - try to parse as JSON
+			var req map[string]interface{}
+			if err := json.Unmarshal(body, &req); err == nil {
+				if method, ok := req["method"].(string); ok {
+					switch method {
+					case "eth_blockNumber":
+						w.Header().Set("Content-Type", "application/json")
+						w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+						return
+					case "eth_call":
+						w.Header().Set("Content-Type", "application/json")
+						w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+						return
+					}
+				}
+			}
+		}
+
+		// For test requests, verify gzip encoding
+		if contentEncoding != "gzip" {
+			t.Errorf("Expected Content-Encoding: gzip, got: %s", contentEncoding)
+		}
+
+		// Decompress gzipped request body
+		var decompressedBody []byte
+		if contentEncoding == "gzip" {
+			gzipReader, err := gzip.NewReader(bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("Failed to create gzip reader: %v", err)
+			}
+			decompressedBody, err = io.ReadAll(gzipReader)
+			gzipReader.Close()
+			if err != nil {
+				t.Fatalf("Failed to decompress request body: %v", err)
+			}
+		} else {
+			decompressedBody = body
+		}
+
+		if len(decompressedBody) == 0 {
 			t.Error("Expected non-empty request body")
 		}
 
