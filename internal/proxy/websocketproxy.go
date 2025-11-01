@@ -53,13 +53,13 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	// Get connection from pool
-	targetConn := p.getConnection()
+	// Create dedicated connection for this client (no pooling for subscriptions)
+	targetConn := p.createNewConnection()
 	if targetConn == nil {
-		p.logger.Error("failed to get target connection")
+		p.logger.Error("failed to create target connection")
 		return
 	}
-	defer p.returnConnection(targetConn)
+	defer targetConn.Close()
 
 	// Track subscriptions for this specific connection
 	connectionSubscriptions := make(map[string]bool)
@@ -84,33 +84,38 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			
-			// Read the message to parse for subscriptions
-			msgBytes, err := io.ReadAll(reader)
-			if err != nil {
-				p.logger.Debug(direction+" read error", "error", err)
-				errCh <- err
-				return
-			}
-			
-			// Track subscriptions if this is a client->target message
-			if direction == "client->target" {
-				p.trackSubscriptionFromMessage(msgBytes, connectionSubscriptions)
-			} else if direction == "target->client" {
-				p.trackSubscriptionResponse(msgBytes, connectionSubscriptions)
-			}
-			
+			// Get writer first to start forwarding immediately
 			writer, err := dst.NextWriter(mt)
 			if err != nil {
 				p.logger.Debug(direction+" write error", "error", err)
 				errCh <- err
 				return
 			}
-			if _, err = io.Copy(writer, bytes.NewReader(msgBytes)); err != nil {
+			
+			// Buffer for parsing while forwarding
+			var buf bytes.Buffer
+			teeReader := io.TeeReader(reader, &buf)
+			
+			// Forward immediately while also buffering
+			if _, err = io.Copy(writer, teeReader); err != nil {
+				writer.Close()
 				p.logger.Debug(direction+" copy error", "error", err)
 				errCh <- err
 				return
 			}
-			_ = writer.Close()
+			if err = writer.Close(); err != nil {
+				p.logger.Debug(direction+" close error", "error", err)
+				errCh <- err
+				return
+			}
+			
+			// Parse from buffer (non-blocking for next message)
+			msgBytes := buf.Bytes()
+			if direction == "client->target" {
+				p.trackSubscriptionFromMessage(msgBytes, connectionSubscriptions)
+			} else if direction == "target->client" {
+				p.trackSubscriptionResponse(msgBytes, connectionSubscriptions)
+			}
 		}
 	}
 
