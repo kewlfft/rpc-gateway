@@ -430,14 +430,21 @@ func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 
 // CheckAndSetHealth makes the following calls
 // - `eth_blockNumber` - to get the latest block reported by the node
-// - `eth_call` - to get the gas left
+// - `eth_call` - to get the gas left (runs sequentially after block number check)
 // And sets the health status based on the responses.
 func (h *HealthChecker) CheckAndSetHealth() {
 	if h.IsTainted() {
 		return
 	}
-	go h.checkAndSetBlockNumberHealth()
-	go h.checkAndSetGasLeftHealth()
+	// Run block number check first, then gas left check sequentially
+	// This reduces concurrent load and prevents wasting requests if block number fails
+	// Note: These run synchronously but CheckAndSetHealth() itself is called from a goroutine
+	// so it doesn't block the main select loop
+	h.checkAndSetBlockNumberHealth()
+	// Only run gas left check after block number completes successfully
+	if !h.IsTainted() {
+		h.checkAndSetGasLeftHealth()
+	}
 }
 
 // SetBlockNumberUpdateCallback sets the callback function to be called when block number is updated.
