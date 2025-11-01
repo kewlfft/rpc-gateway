@@ -43,7 +43,7 @@ func HealthCheckHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 	return HTTPClientSettings{
 		Timeout:              timeout,
 		MaxIdleConns:         50,   // Lower than main proxy since health checks are less frequent
-		MaxIdleConnsPerHost:  5,    // Lower than main proxy for health checks
+		MaxIdleConnsPerHost:  40,    // Lower than main proxy for health checks
 		IdleConnTimeout:      30 * time.Second, // Shorter timeout for health checks
 		ResponseHeaderTimeout: timeout,
 		DisableCompression:   true,
