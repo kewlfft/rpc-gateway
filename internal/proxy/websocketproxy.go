@@ -56,13 +56,16 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Create dedicated connection for this client (no pooling for subscriptions)
 	targetConn := p.createNewConnection()
 	if targetConn == nil {
-		p.logger.Error("failed to create target connection")
+		p.logger.Error("failed to create target connection",
+			"target_url", p.targetURL)
 		return
 	}
 	defer targetConn.Close()
 
 	// Track subscriptions for this specific connection
 	connectionSubscriptions := make(map[string]bool)
+	// Track pending subscription request IDs to identify subscription responses
+	pendingSubscriptionRequests := make(map[interface{}]bool)
 	
 	errCh := make(chan error, 2)
 	var once sync.Once
@@ -79,7 +82,9 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for {
 			mt, reader, err := src.NextReader()
 			if err != nil {
-				p.logger.Debug(direction+" read error", "error", err)
+				p.logger.Debug(direction+" read error",
+					"error", err,
+					"target_url", p.targetURL)
 				errCh <- err
 				return
 			}
@@ -87,7 +92,9 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Get writer first to start forwarding immediately
 			writer, err := dst.NextWriter(mt)
 			if err != nil {
-				p.logger.Debug(direction+" write error", "error", err)
+				p.logger.Debug(direction+" write error",
+					"error", err,
+					"target_url", p.targetURL)
 				errCh <- err
 				return
 			}
@@ -99,12 +106,16 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Forward immediately while also buffering
 			if _, err = io.Copy(writer, teeReader); err != nil {
 				writer.Close()
-				p.logger.Debug(direction+" copy error", "error", err)
+				p.logger.Debug(direction+" copy error",
+					"error", err,
+					"target_url", p.targetURL)
 				errCh <- err
 				return
 			}
 			if err = writer.Close(); err != nil {
-				p.logger.Debug(direction+" close error", "error", err)
+				p.logger.Debug(direction+" close error",
+					"error", err,
+					"target_url", p.targetURL)
 				errCh <- err
 				return
 			}
@@ -112,9 +123,11 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Parse from buffer (non-blocking for next message)
 			msgBytes := buf.Bytes()
 			if direction == "client->target" {
-				p.trackSubscriptionFromMessage(msgBytes, connectionSubscriptions)
+				p.trackSubscriptionFromMessage(msgBytes, connectionSubscriptions, pendingSubscriptionRequests)
 			} else if direction == "target->client" {
-				p.trackSubscriptionResponse(msgBytes, connectionSubscriptions)
+				p.trackSubscriptionResponse(msgBytes, connectionSubscriptions, pendingSubscriptionRequests)
+				// Log JSON-RPC errors from upstream provider
+				p.logJSONRPCError(msgBytes)
 			}
 		}
 	}
@@ -145,7 +158,9 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	err = <-errCh
 	closeAll()
-	p.logger.Debug("websocket proxy terminated", "reason", err)
+	p.logger.Debug("websocket proxy terminated",
+		"reason", err,
+		"target_url", p.targetURL)
 }
 
 // TrackSubscription adds a subscription ID to the tracking map
@@ -205,7 +220,7 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectionSubscriptions map[string]bool) {
+func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[interface{}]bool) {
 	// Parse JSON-RPC message
 	var msg map[string]interface{}
 	if err := json.Unmarshal(msgBytes, &msg); err != nil {
@@ -219,7 +234,11 @@ func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectio
 
 	// Check if this is a subscription request
 	if method == "eth_subscribe" || method == "shh_subscribe" || method == "net_subscribe" {
-		p.logger.Debug("subscription request detected", "method", method)
+		// Track the request ID so we can identify the subscription response
+		if requestID, ok := msg["id"]; ok && requestID != nil {
+			pendingSubscriptionRequests[requestID] = true
+			p.logger.Debug("subscription request detected", "method", method, "id", requestID)
+		}
 	}
 
 	// Check if this is an unsubscribe request
@@ -234,12 +253,21 @@ func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectio
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionResponse(msgBytes []byte, connectionSubscriptions map[string]bool) {
+func (p *WebSocketProxy) trackSubscriptionResponse(msgBytes []byte, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[interface{}]bool) {
 	// Parse JSON-RPC message
 	var msg map[string]interface{}
 	if err := json.Unmarshal(msgBytes, &msg); err != nil {
 		return // Not a valid JSON message
 	}
+
+	// Only track subscription IDs if this response corresponds to a pending subscription request
+	requestID, hasID := msg["id"]
+	if !hasID || !pendingSubscriptionRequests[requestID] {
+		return // Not a subscription response
+	}
+
+	// Remove from pending requests
+	delete(pendingSubscriptionRequests, requestID)
 
 	// Check if this is a response with a result (subscription ID)
 	if result, ok := msg["result"]; ok {
@@ -249,6 +277,25 @@ func (p *WebSocketProxy) trackSubscriptionResponse(msgBytes []byte, connectionSu
 			p.TrackSubscription(subID)
 			p.logger.Debug("subscription ID tracked from response", "subID", subID)
 		}
+	}
+}
+
+// logJSONRPCError logs JSON-RPC error responses from upstream providers
+func (p *WebSocketProxy) logJSONRPCError(msgBytes []byte) {
+	var msg map[string]interface{}
+	if err := json.Unmarshal(msgBytes, &msg); err != nil {
+		return // Not a valid JSON message
+	}
+
+	// Check if this is a JSON-RPC error response
+	if errObj, ok := msg["error"].(map[string]interface{}); ok {
+		code, _ := errObj["code"].(float64)
+		message, _ := errObj["message"].(string)
+		
+		p.logger.Debug("JSON-RPC error from upstream provider",
+			"target_url", p.targetURL,
+			"error_code", int(code),
+			"error_message", message)
 	}
 }
 

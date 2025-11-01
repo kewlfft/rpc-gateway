@@ -111,6 +111,25 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 
 	var receivedHeaderContentEncoding, receivedHeaderContentLength string
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+
+		// Handle health check requests
+		if method, ok := req["method"].(string); ok {
+			switch method {
+			case "eth_blockNumber":
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+				return
+			case "eth_call":
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+				return
+			}
+		}
+
+		// Store headers only for non-health-check requests (the actual test request)
 		receivedHeaderContentEncoding = r.Header.Get("Content-Encoding")
 		receivedHeaderContentLength = r.Header.Get(contentLength)
 		w.Header().Set("Content-Type", "application/json")
@@ -357,9 +376,9 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 
 	var receivedBody []byte
 	fakeRPCServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedBody, _ = io.ReadAll(r.Body)
+		body, _ := io.ReadAll(r.Body)
 		var req map[string]interface{}
-		_ = json.Unmarshal(receivedBody, &req)
+		_ = json.Unmarshal(body, &req)
 
 		// Handle health check requests
 		if method, ok := req["method"].(string); ok {
@@ -375,8 +394,11 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 			}
 		}
 
+		// Store non-health-check requests (the actual test request)
+		receivedBody = body
+
 		// Default: echo back the request body
-		w.Write(receivedBody)
+		w.Write(body)
 	}))
 	defer fakeRPCServer.Close()
 

@@ -349,6 +349,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					if hc := p.hcm.GetHealthChecker(name, connType); hc != nil {
 						hc.TaintHTTP()
 					}
+					p.logger.Debug("trying next WebSocket provider",
+						"failed_provider", name,
+						"failed_count", len(failedProviders),
+						"total_providers", len(healthyProviders))
 					continue // Try next provider
 				}
 

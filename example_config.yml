@@ -10,9 +10,21 @@ proxies:
   - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
     timeout: "1s" # timeout for both upstream requests and health checks
     healthChecks:
-      interval: "10s" # how often to do healthchecks
+      interval: "60s" # how often to do healthchecks
       blockDiffThreshold: 2 # maximum allowed block difference between providers
     targets: # the order here determines the failover order
+      - name: "drpc"
+        connection:
+          http:
+            url: "https://eth.drpc.org"
+          websocket:
+            url: "wss://eth.drpc.org"
+      - name: "0xrpc"
+        connection:
+          http:
+            url: "https://0xrpc.io/eth"
+          websocket:
+            url: "wss://0xrpc.io/eth"
       - name: "meow"
         connection:
           http:
@@ -26,12 +38,12 @@ proxies:
           http:
             url: "https://ethereum.publicnode.com"
           websocket:
-            url: "wss://ethereum.publicnode.com"
+            url: "wss://ethereum.publicnode.come"
 
   - path: "pol" # another proxy example
     timeout: "0.5s"
     healthChecks:
-      interval: "8s"
+      interval: "68s"
       blockDiffThreshold: 2
     targets:
       - name: "polygon-rpc"
@@ -47,7 +59,7 @@ proxies:
     chainType: "solana"
     timeout: "1s"
     healthChecks:
-      interval: "10s"
+      interval: "40s"
       blockDiffThreshold: 2
     targets:
       - name: "solana_mainnet"
