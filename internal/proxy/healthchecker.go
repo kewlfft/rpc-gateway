@@ -206,8 +206,8 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		// Create a custom dialer with more robust TLS settings
 		dialer := websocket.Dialer{
 			HandshakeTimeout: 30 * time.Second,
-			ReadBufferSize:   1024,
-			WriteBufferSize:  1024,
+			ReadBufferSize:   16384,
+			WriteBufferSize:  16384,
 			EnableCompression: true,
 		}
 		

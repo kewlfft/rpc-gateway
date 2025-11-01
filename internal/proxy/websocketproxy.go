@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	bufferSize      = 1024
+	bufferSize      = 16384
 	handshakeTimeout = 45 * time.Second
 	pingInterval     = 15 * time.Second
 	pingTimeout      = 2 * time.Second
