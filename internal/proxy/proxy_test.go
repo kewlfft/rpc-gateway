@@ -37,6 +37,25 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
 
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+
+		// Handle health check requests
+		if method, ok := req["method"].(string); ok {
+			switch method {
+			case "eth_blockNumber":
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+				return
+			case "eth_call":
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+				return
+			}
+		}
+
+		// For actual requests, return 500 to simulate failure
 		http.Error(w,
 			http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}))
@@ -44,6 +63,24 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 
 	fakeRPC2Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+
+		// Handle health check requests
+		if method, ok := req["method"].(string); ok {
+			switch method {
+			case "eth_blockNumber":
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+				return
+			case "eth_call":
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+				return
+			}
+		}
+
+		// For actual requests, echo the body back
 		w.Write(body)
 	}))
 	defer fakeRPC2Server.Close()

@@ -18,6 +18,12 @@ const (
 	pingTimeout      = 2 * time.Second
 )
 
+// upstreamCloseInfo contains error and whether it's a graceful close from upstream
+type upstreamCloseInfo struct {
+	err           error
+	isGracefulClose bool
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  bufferSize,
 	WriteBufferSize: bufferSize,
@@ -68,12 +74,19 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Track pending subscription request IDs to identify subscription responses
 	pendingSubscriptionRequests := make(map[interface{}]bool)
 	
-	errCh := make(chan error, 2)
+	// Buffer of 3 to handle errors from 2 pipes + ping goroutine without blocking
+	errCh := make(chan upstreamCloseInfo, 3)
 	var once sync.Once
-	closeAll := func() {
+	closeAll := func(isGracefulClose bool) {
 		once.Do(func() {
 			// Clean up subscriptions for this connection
 			p.cleanupConnectionSubscriptions(connectionSubscriptions)
+			// If upstream closed gracefully, forward close frame to client
+			if isGracefulClose {
+				deadline := time.Now().Add(2 * time.Second)
+				// Ignore error - connection may already be closed
+				_ = clientConn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), deadline)
+			}
 			clientConn.Close()
 			targetConn.Close()
 		})
@@ -83,10 +96,14 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for {
 			mt, reader, err := src.NextReader()
 			if err != nil {
+				// Check if this is a graceful close from upstream
+				isGracefulClose := direction == "target->client" && websocket.IsCloseError(err)
 				p.logger.Debug(direction+" read error",
 					"error", err,
-					"target_url", p.targetURL)
-				errCh <- err
+					"target_url", p.targetURL,
+					"is_close", isGracefulClose)
+				// Send error info (non-blocking - channel has sufficient buffer)
+				errCh <- upstreamCloseInfo{err: err, isGracefulClose: isGracefulClose}
 				return
 			}
 			
@@ -96,7 +113,7 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.Debug(direction+" write error",
 					"error", err,
 					"target_url", p.targetURL)
-				errCh <- err
+				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
 				return
 			}
 			
@@ -110,14 +127,14 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.Debug(direction+" copy error",
 					"error", err,
 					"target_url", p.targetURL)
-				errCh <- err
+				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
 				return
 			}
 			if err = writer.Close(); err != nil {
 				p.logger.Debug(direction+" close error",
 					"error", err,
 					"target_url", p.targetURL)
-				errCh <- err
+				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
 				return
 			}
 			
@@ -146,22 +163,23 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case <-ticker.C:
 				deadline := time.Now().Add(pingTimeout)
 				if err := clientConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-					errCh <- err
+					errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
 					return
 				}
 				if err := targetConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-					errCh <- err
+					errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
 					return
 				}
 			}
 		}
 	}()
 
-	err = <-errCh
-	closeAll()
+	closeInfo := <-errCh
+	closeAll(closeInfo.isGracefulClose)
 	p.logger.Debug("websocket proxy terminated",
-		"reason", err,
-		"target_url", p.targetURL)
+		"reason", closeInfo.err,
+		"target_url", p.targetURL,
+		"graceful_close", closeInfo.isGracefulClose)
 }
 
 // TrackSubscription adds a subscription ID to the tracking map
