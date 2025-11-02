@@ -529,12 +529,12 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 			h.shutdown()
 			return
 		case <-timer.C:
-			// Reset timer BEFORE starting health check to prevent overlapping intervals
-			// This ensures the next interval starts from now, not after check completes
-			timer.Reset(h.config.Interval)
-			
 			// Perform health check
 			h.CheckAndSetHealth()
+			
+			// Reset timer for next interval
+			// The channel has already been drained by reading into this case
+			timer.Reset(h.config.Interval)
 		case <-h.taintRemoveCh:
 			// Clean up taint removal timer
 			h.mu.Lock()

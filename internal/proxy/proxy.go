@@ -100,11 +100,8 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		hcm.SetWebSocketProxyReferences(wsProxies)
 	}
 
-	// Start health check manager
-	if err := hcm.Start(ctx); err != nil {
-		return nil, fmt.Errorf("failed to start health check manager: %w", err)
-	}
-	config.Logger.Info("health check manager started")
+	// Health check manager will be started by RPCGateway.Start()
+	// Don't start it here to avoid duplicate starts
 
 	return proxy, nil
 }
