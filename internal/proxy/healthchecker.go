@@ -213,25 +213,16 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		
 		conn, resp, err := dialer.DialContext(ctx, h.config.URL, nil)
 		if err != nil {
-			// Enhanced error logging for TLS issues
-			h.config.Logger.Error("WebSocket connection failed", 
-				"err", err,
-				"url", h.config.URL,
+			// Log health check failure concisely - these are expected during provider outages
+			var statusCode int
+			if resp != nil {
+				statusCode = resp.StatusCode
+			}
+			h.config.Logger.Info("WebSocket health check failed", 
+				"error", err,
 				"provider", h.config.Name,
-				"chainType", h.config.ChainType,
 				"path", h.config.Path,
-				"responseStatus", func() int {
-					if resp != nil {
-						return resp.StatusCode
-					}
-					return 0
-				}(),
-				"responseHeaders", func() map[string][]string {
-					if resp != nil {
-						return resp.Header
-					}
-					return nil
-				}(),
+				"status", statusCode,
 			)
 			return 0, err
 		}
