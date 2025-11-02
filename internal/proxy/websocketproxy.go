@@ -15,7 +15,6 @@ import (
 const (
 	bufferSize      = 16384
 	pingInterval     = 15 * time.Second
-	pingTimeout      = 2 * time.Second
 )
 
 // upstreamCloseInfo contains error and whether it's a graceful close from upstream
@@ -161,7 +160,7 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				deadline := time.Now().Add(pingTimeout)
+				deadline := time.Now().Add(p.timeout)
 				if err := clientConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
 					errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
 					return
@@ -345,7 +344,7 @@ func (p *WebSocketProxy) getConnection() *websocket.Conn {
 	select {
 	case conn := <-p.connPool:
 		// Test if connection is still alive
-		if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingTimeout)); err != nil {
+		if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(p.timeout)); err != nil {
 			conn.Close()
 			// Create new connection if pool connection is dead
 			return p.createNewConnection()
