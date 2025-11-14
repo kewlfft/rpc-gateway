@@ -143,9 +143,12 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if direction == "client->target" {
 				p.trackSubscriptionFromMessage(msgBytes, connectionSubscriptions, pendingSubscriptionRequests)
 			} else if direction == "target->client" {
-				p.trackSubscriptionResponse(msgBytes, connectionSubscriptions, pendingSubscriptionRequests)
-				// Log JSON-RPC errors from upstream provider
-				p.logJSONRPCError(msgBytes)
+				// Parse once and reuse for both tracking and error logging
+				var msg map[string]interface{}
+				if err := json.Unmarshal(msgBytes, &msg); err == nil {
+					p.trackSubscriptionResponse(msg, connectionSubscriptions, pendingSubscriptionRequests)
+					p.logJSONRPCError(msg)
+				}
 			}
 		}
 	}
@@ -284,13 +287,7 @@ func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectio
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionResponse(msgBytes []byte, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[interface{}]bool) {
-	// Parse JSON-RPC message
-	var msg map[string]interface{}
-	if err := json.Unmarshal(msgBytes, &msg); err != nil {
-		return // Not a valid JSON message
-	}
-
+func (p *WebSocketProxy) trackSubscriptionResponse(msg map[string]interface{}, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[interface{}]bool) {
 	// Only track subscription IDs if this response corresponds to a pending subscription request
 	requestID, hasID := msg["id"]
 	if !hasID || !pendingSubscriptionRequests[requestID] {
@@ -312,12 +309,7 @@ func (p *WebSocketProxy) trackSubscriptionResponse(msgBytes []byte, connectionSu
 }
 
 // logJSONRPCError logs JSON-RPC error responses from upstream providers
-func (p *WebSocketProxy) logJSONRPCError(msgBytes []byte) {
-	var msg map[string]interface{}
-	if err := json.Unmarshal(msgBytes, &msg); err != nil {
-		return // Not a valid JSON message
-	}
-
+func (p *WebSocketProxy) logJSONRPCError(msg map[string]interface{}) {
 	// Check if this is a JSON-RPC error response
 	if errObj, ok := msg["error"].(map[string]interface{}); ok {
 		code, _ := errObj["code"].(float64)
