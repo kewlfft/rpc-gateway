@@ -38,7 +38,8 @@ type WebSocketProxy struct {
 	mu            sync.RWMutex
 	// Connection pooling
 	connPool chan *websocket.Conn
-	poolMu   sync.Mutex
+	// Prevent concurrent UnsubscribeAll calls
+	unsubscribing sync.Mutex
 }
 
 func NewWebSocketProxy(targetURL string, timeout time.Duration, logger *slog.Logger) *WebSocketProxy {
@@ -199,12 +200,16 @@ func (p *WebSocketProxy) RemoveSubscription(subID string) {
 
 // UnsubscribeAll sends unsubscribe messages for all tracked subscriptions
 func (p *WebSocketProxy) UnsubscribeAll() {
+	// Prevent concurrent calls to UnsubscribeAll
+	p.unsubscribing.Lock()
+	defer p.unsubscribing.Unlock()
+
+	// Copy subscription IDs while holding the lock
 	p.mu.Lock()
 	subIDs := make([]string, 0, len(p.subscriptions))
 	for subID := range p.subscriptions {
 		subIDs = append(subIDs, subID)
 	}
-	p.subscriptions = make(map[string]bool)
 	p.mu.Unlock()
 
 	if len(subIDs) == 0 {
@@ -217,9 +222,17 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 	conn := p.getConnection()
 	if conn == nil {
 		p.logger.Error("failed to get connection for unsubscribe")
+		// Don't clear subscriptions if we can't get a connection
+		// They will be cleaned up when connections close naturally
 		return
 	}
 	defer p.returnConnection(conn)
+
+	// Clear subscriptions map only after successfully getting a connection
+	// This ensures we don't lose track of subscriptions if connection fails
+	p.mu.Lock()
+	p.subscriptions = make(map[string]bool)
+	p.mu.Unlock()
 
 	// Send unsubscribe messages for each subscription
 	for _, subID := range subIDs {
