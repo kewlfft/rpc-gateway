@@ -110,13 +110,14 @@ func (r *RPCGateway) Stop(c context.Context) error {
 func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	// Set log level based on LOG_LEVEL environment variable
 	logLevelStr := strings.ToLower(os.Getenv("LOG_LEVEL"))
-	logLevel := map[string]slog.Level{
+	logLevelMap := map[string]slog.Level{
 		"debug": slog.LevelDebug,
 		"info":  slog.LevelInfo,
 		"warn":  slog.LevelWarn,
 		"error": slog.LevelError,
-	}[logLevelStr]
-	if logLevel == 0 {
+	}
+	logLevel, exists := logLevelMap[logLevelStr]
+	if !exists {
 		logLevel = slog.LevelWarn // Default to warn
 	}
 
