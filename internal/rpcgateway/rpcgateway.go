@@ -140,6 +140,9 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			},
 		}))
 
+	// Log the configured log level using default logger so it always appears
+	slog.Info("configured log level", "level", logLevel.String(), "LOG_LEVEL", os.Getenv("LOG_LEVEL"))
+
 	// Create health check managers and proxies for each proxy config
 	for i, proxyConfig := range config.Proxies {
 		timeout, err := time.ParseDuration(proxyConfig.Timeout)
