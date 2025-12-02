@@ -114,8 +114,9 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 
 // writeErrorResponse writes an error response in the appropriate format based on the request
 // bodyBytes is optional - if provided, it will be used to extract the request ID
-func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, message string, status int, bodyBytes ...[]byte) {
-	errors.WriteJSONRPCError(w, r, message, status, bodyBytes...)
+// providerDetails is optional - if provided, it will be included in the error log for diagnostics
+func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, message string, status int, bodyBytes []byte, providerDetails ...string) {
+	errors.WriteJSONRPCError(w, r, message, status, bodyBytes, providerDetails...)
 }
 
 // copyResponse copies headers, status code, and body from the source response to the target response writer
@@ -304,7 +305,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error", err,
 				"method", r.Method,
 				"path", r.URL.Path)
-			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
+			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest, nil)
 			return
 		}
 		// Restore body for potential error handling
@@ -316,7 +317,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	healthyProviders := p.getHealthyProviders(connType)
 	
 	if len(healthyProviders) == 0 {
-		p.writeErrorResponse(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes)
+		// Collect provider status for diagnostic context
+		providerDetails := make([]string, 0, len(p.targets))
+		for _, target := range p.targets {
+			name := target.Name()
+			checker := p.hcm.GetHealthChecker(name, connType)
+			if checker == nil {
+				providerDetails = append(providerDetails, fmt.Sprintf("%s:no_checker", name))
+			} else if checker.IsTainted() {
+				providerDetails = append(providerDetails, fmt.Sprintf("%s:tainted", name))
+			} else {
+				providerDetails = append(providerDetails, fmt.Sprintf("%s:unknown", name))
+			}
+		}
+		p.writeErrorResponse(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
 		return
 	}
 
@@ -388,7 +402,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	p.writeErrorResponse(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes)
+	// Collect provider status for diagnostic context
+	providerDetails := make([]string, 0, len(p.targets))
+	for _, target := range p.targets {
+		name := target.Name()
+		checker := p.hcm.GetHealthChecker(name, connType)
+		if checker == nil {
+			providerDetails = append(providerDetails, fmt.Sprintf("%s:no_checker", name))
+		} else if checker.IsTainted() {
+			providerDetails = append(providerDetails, fmt.Sprintf("%s:tainted", name))
+		} else {
+			providerDetails = append(providerDetails, fmt.Sprintf("%s:unknown", name))
+		}
+	}
+	p.writeErrorResponse(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy

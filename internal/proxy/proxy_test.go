@@ -567,3 +567,366 @@ func TestTronProxyURLRedirection(t *testing.T) {
 		assert.Equal(t, "test-api-key", receivedHeaders.Get("TRON-PRO-API-KEY"))
 	})
 }
+
+func TestAllProvidersFailingScenarios(t *testing.T) {
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+
+	t.Run("all providers have no HTTP health checkers", func(t *testing.T) {
+		config := createConfig()
+		config.Targets = []NodeProviderConfig{
+			{
+				Name: "Provider1",
+				Connection: struct {
+					HTTP struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
+				}{
+					HTTP: struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					}{URL: "", APIKey: ""}, // Empty URL means no health checker
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+				},
+			},
+			{
+				Name: "Provider2",
+				Connection: struct {
+					HTTP struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
+				}{
+					HTTP: struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					}{URL: "", APIKey: ""}, // Empty URL means no health checker
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+				},
+			},
+		}
+		config.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+		proxy, err := NewProxy(context.Background(), config)
+		require.NoError(t, err)
+		require.NotNil(t, proxy)
+
+		req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		proxy.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+		
+		var response map[string]interface{}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]interface{})["message"])
+	})
+
+	t.Run("all providers are tainted", func(t *testing.T) {
+		// Create a server that fails health checks
+		failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Always return error for health checks
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+		}))
+		defer failingServer.Close()
+
+		config := createConfig()
+		config.Targets = []NodeProviderConfig{
+			{
+				Name: "Provider1",
+				Connection: struct {
+					HTTP struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
+				}{
+					HTTP: struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					}{URL: failingServer.URL, APIKey: ""},
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+				},
+			},
+			{
+				Name: "Provider2",
+				Connection: struct {
+					HTTP struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
+				}{
+					HTTP: struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					}{URL: failingServer.URL, APIKey: ""},
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+				},
+			},
+		}
+		config.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+		proxy, err := NewProxy(context.Background(), config)
+		require.NoError(t, err)
+		require.NotNil(t, proxy)
+
+		// Start health check manager to trigger health checks
+		hcm := proxy.GetHealthCheckManager()
+		ctx := context.Background()
+		err = hcm.Start(ctx)
+		require.NoError(t, err)
+
+		// Wait a bit for health checks to run and taint providers
+		// Health checks have InitialDelay, so wait for that + a bit more
+		time.Sleep(2 * time.Second)
+
+		// Verify all providers are tainted
+		for _, target := range config.Targets {
+			checker := hcm.GetHealthChecker(target.Name, "http")
+			require.NotNil(t, checker, "Health checker should exist for %s", target.Name)
+			assert.True(t, checker.IsTainted(), "Provider %s should be tainted", target.Name)
+		}
+
+		req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		proxy.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+		
+		var response map[string]interface{}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]interface{})["message"])
+	})
+
+	t.Run("all providers fail during request forwarding", func(t *testing.T) {
+		// Create servers that accept health checks but fail actual requests
+		server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+
+			// Handle health check requests successfully
+			if method, ok := req["method"].(string); ok {
+				switch method {
+				case "eth_blockNumber":
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+					return
+				case "eth_call":
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+					return
+				}
+			}
+
+			// Fail actual requests
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}))
+		defer server1.Close()
+
+		server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			json.Unmarshal(body, &req)
+
+			// Handle health check requests successfully
+			if method, ok := req["method"].(string); ok {
+				switch method {
+				case "eth_blockNumber":
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+					return
+				case "eth_call":
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+					return
+				}
+			}
+
+			// Fail actual requests
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}))
+		defer server2.Close()
+
+		config := createConfig()
+		config.Targets = []NodeProviderConfig{
+			{
+				Name: "Provider1",
+				Connection: struct {
+					HTTP struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
+				}{
+					HTTP: struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					}{URL: server1.URL, APIKey: ""},
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+				},
+			},
+			{
+				Name: "Provider2",
+				Connection: struct {
+					HTTP struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
+				}{
+					HTTP: struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					}{URL: server2.URL, APIKey: ""},
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+				},
+			},
+		}
+		config.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+		proxy, err := NewProxy(context.Background(), config)
+		require.NoError(t, err)
+		require.NotNil(t, proxy)
+
+		// Start health check manager
+		hcm := proxy.GetHealthCheckManager()
+		ctx := context.Background()
+		err = hcm.Start(ctx)
+		require.NoError(t, err)
+
+		// Wait for health checks to pass (providers should be healthy)
+		time.Sleep(2 * time.Second)
+
+		// Verify providers are healthy initially
+		for _, target := range config.Targets {
+			checker := hcm.GetHealthChecker(target.Name, "http")
+			require.NotNil(t, checker, "Health checker should exist for %s", target.Name)
+			assert.False(t, checker.IsTainted(), "Provider %s should be healthy initially", target.Name)
+		}
+
+		// Use a method that won't match health check methods
+		req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123", "latest"]}`)))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		proxy.ServeHTTP(rr, req)
+
+		// Should get 503 because all providers fail during forwarding
+		assert.Equal(t, http.StatusServiceUnavailable, rr.Code, "Expected 503 when all providers fail")
+		
+		var response map[string]interface{}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+		require.NotNil(t, response["error"], "Response should have error field")
+		assert.Contains(t, response["error"].(map[string]interface{})["message"].(string), "All providers failed")
+	})
+
+	t.Run("mix of no checkers and tainted providers", func(t *testing.T) {
+		failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+		}))
+		defer failingServer.Close()
+
+		config := createConfig()
+		config.Targets = []NodeProviderConfig{
+			{
+				Name: "Provider1",
+				Connection: struct {
+					HTTP struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
+				}{
+					HTTP: struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					}{URL: "", APIKey: ""}, // No health checker
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+				},
+			},
+			{
+				Name: "Provider2",
+				Connection: struct {
+					HTTP struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					} `yaml:"http"`
+					WebSocket struct {
+						URL string `yaml:"url"`
+					} `yaml:"websocket"`
+				}{
+					HTTP: struct {
+						URL    string `yaml:"url"`
+						APIKey string `yaml:"apiKey"`
+					}{URL: failingServer.URL, APIKey: ""}, // Will be tainted
+					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+				},
+			},
+		}
+		config.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+		proxy, err := NewProxy(context.Background(), config)
+		require.NoError(t, err)
+		require.NotNil(t, proxy)
+
+		// Start health check manager
+		hcm := proxy.GetHealthCheckManager()
+		ctx := context.Background()
+		err = hcm.Start(ctx)
+		require.NoError(t, err)
+
+		// Wait for health checks to run
+		time.Sleep(2 * time.Second)
+
+		// Verify Provider2 is tainted
+		checker2 := hcm.GetHealthChecker("Provider2", "http")
+		require.NotNil(t, checker2)
+		assert.True(t, checker2.IsTainted(), "Provider2 should be tainted")
+
+		// Verify Provider1 has no checker
+		checker1 := hcm.GetHealthChecker("Provider1", "http")
+		assert.Nil(t, checker1, "Provider1 should have no health checker")
+
+		req, err := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		proxy.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+		
+		var response map[string]interface{}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]interface{})["message"])
+	})
+}
