@@ -141,8 +141,6 @@ type HealthChecker struct {
 	httpClient          *http.Client
 	blockNumber        atomic.Uint64
 	mu                 sync.RWMutex // Only for taint state
-	timer              *time.Timer
-	stopCh            chan struct{}
 	taintRemoveCh      chan struct{}
 	stopped           atomic.Bool
 	isTainted         atomic.Bool
@@ -175,7 +173,6 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 	healthchecker := &HealthChecker{
 		config:     config,
 		httpClient: httpClient,
-		stopCh:     make(chan struct{}),
 		taintRemoveCh: make(chan struct{}, 1),
 		taint: TaintState{
 			config:   healthCheckTaintConfig,
@@ -196,6 +193,74 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 
 func (h *HealthChecker) Name() string {
 	return h.config.Name
+}
+
+// checkSolanaSlotViaWebSocket performs Solana slot subscription via WebSocket
+func (h *HealthChecker) checkSolanaSlotViaWebSocket(conn *websocket.Conn) (uint64, error) {
+	if err := conn.WriteJSON(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe", "params": json.RawMessage("[]"),
+	}); err != nil {
+		return 0, fmt.Errorf("slotSubscribe failed: %w", err)
+	}
+
+	var subResp struct{ Result interface{} }
+	if err := conn.ReadJSON(&subResp); err != nil {
+		return 0, fmt.Errorf("subscription response failed: %w", err)
+	}
+	subID := subResp.Result
+
+	var msg map[string]interface{}
+	if err := conn.ReadJSON(&msg); err != nil {
+		if websocket.IsUnexpectedCloseError(err) {
+			return 0, fmt.Errorf("websocket closed unexpectedly: %w", err)
+		}
+		if err == websocket.ErrCloseSent {
+			return 0, fmt.Errorf("websocket close sent: %w", err)
+		}
+		return 0, fmt.Errorf("slot notification failed: %w", err)
+	}
+
+	method, _ := msg["method"].(string)
+	if method != "slotNotification" {
+		return 0, fmt.Errorf("unexpected notification method: %s", method)
+	}
+
+	params, _ := msg["params"].(map[string]interface{})
+	result, _ := params["result"].(map[string]interface{})
+	slot, ok := result["slot"].(float64)
+	if !ok {
+		return 0, fmt.Errorf("invalid slot format")
+	}
+
+	// Unsubscribe
+	_ = conn.WriteJSON(map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "slotUnsubscribe", "params": []any{subID},
+	})
+	_ = conn.ReadJSON(&map[string]any{}) // discard response
+
+	return uint64(slot), nil
+}
+
+// checkEVMBlockNumberViaWebSocket performs EVM block number check via WebSocket
+func (h *HealthChecker) checkEVMBlockNumberViaWebSocket(conn *websocket.Conn) (uint64, error) {
+	if err := conn.WriteJSON(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []any{},
+	}); err != nil {
+		return 0, fmt.Errorf("eth_blockNumber request failed: %w", err)
+	}
+
+	var resp struct {
+		Result string `json:"result"`
+	}
+	if err := conn.ReadJSON(&resp); err != nil {
+		return 0, fmt.Errorf("eth_blockNumber response failed: %w", err)
+	}
+
+	blockNumber, err := parseHex(resp.Result)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse block number: %w", err)
+	}
+	return blockNumber, nil
 }
 
 func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
@@ -236,79 +301,14 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		conn.SetReadDeadline(deadline)
 
 		if h.config.ChainType == "solana" {
-			// Solana uses subscription process
-			if err := conn.WriteJSON(map[string]any{
-				"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe", "params": json.RawMessage("[]"),
-			}); err != nil {
-				return 0, fmt.Errorf("slotSubscribe failed: %w", err)
-			}
-
-			// Read subscription response
-			var subResp struct{ Result interface{} }
-			if err := conn.ReadJSON(&subResp); err != nil {
-				return 0, fmt.Errorf("subscription response failed: %w", err)
-			}
-			subID := subResp.Result
-
-			// Wait for notification
-			var msg map[string]interface{}
-			if err := conn.ReadJSON(&msg); err != nil {
-				if websocket.IsUnexpectedCloseError(err) {
-					return 0, fmt.Errorf("websocket closed unexpectedly: %w", err)
-				}
-				if err == websocket.ErrCloseSent {
-					return 0, fmt.Errorf("websocket close sent: %w", err)
-				}
-				return 0, fmt.Errorf("slot notification failed: %w", err)
-			}
-
-			method, ok := msg["method"].(string)
-			if !ok {
-				return 0, fmt.Errorf("invalid message format: missing method")
-			}
-			if method != "slotNotification" {
-				return 0, fmt.Errorf("unexpected notification method: %s", method)
-			}
-
-			params, ok := msg["params"].(map[string]interface{})
-			if !ok {
-				return 0, fmt.Errorf("invalid params format")
-			}
-			result, ok := params["result"].(map[string]interface{})
-			if !ok {
-				return 0, fmt.Errorf("invalid result format")
-			}
-			slot, ok := result["slot"].(float64)
-			if !ok {
-				return 0, fmt.Errorf("invalid slot format")
-			}
-
-			// Unsubscribe
-			_ = conn.WriteJSON(map[string]any{
-				"jsonrpc": "2.0", "id": 2, "method": "slotUnsubscribe", "params": []any{subID},
-			})
-			_ = conn.ReadJSON(&map[string]any{}) // discard response
-
-			blockNumber = uint64(slot)
-		} else {
-			// EVM chains use simple eth_blockNumber request
-			if err := conn.WriteJSON(map[string]any{
-				"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []any{},
-			}); err != nil {
-				return 0, fmt.Errorf("eth_blockNumber request failed: %w", err)
-			}
-
-			var resp struct {
-				Result string `json:"result"`
-			}
-			if err := conn.ReadJSON(&resp); err != nil {
-				return 0, fmt.Errorf("eth_blockNumber response failed: %w", err)
-			}
-
-			// Parse hex string to uint64 using optimized function
-			blockNumber, err = parseHex(resp.Result)
+			blockNumber, err = h.checkSolanaSlotViaWebSocket(conn)
 			if err != nil {
-				return 0, fmt.Errorf("failed to parse block number: %w", err)
+				return 0, err
+			}
+		} else {
+			blockNumber, err = h.checkEVMBlockNumberViaWebSocket(conn)
+			if err != nil {
+				return 0, err
 			}
 		}
 
@@ -508,35 +508,21 @@ func (h *HealthChecker) Start(c context.Context) {
 
 // runHealthChecker runs the main health checking loop in a separate goroutine
 func (h *HealthChecker) runHealthChecker(c context.Context) {
-	// Create independent context for health checking to avoid cascade
-	healthCtx, healthCancel := context.WithCancel(context.Background())
-	defer healthCancel()
-	
 	timer := time.NewTimer(h.config.InitialDelay)
 	defer timer.Stop()
 
 	for {
 		select {
 		case <-c.Done():
-			// Context cancelled - shutdown gracefully
 			h.config.Logger.Info("health checker shutting down gracefully", 
 				"provider", h.config.Name,
 				"path", h.config.Path)
 			h.shutdown()
 			return
-		case <-healthCtx.Done():
-			// Health context cancelled
-			h.shutdown()
-			return
 		case <-timer.C:
-			// Perform health check
 			h.CheckAndSetHealth()
-			
-			// Reset timer for next interval
-			// The channel has already been drained by reading into this case
 			timer.Reset(h.config.Interval)
 		case <-h.taintRemoveCh:
-			// Clean up taint removal timer
 			h.mu.Lock()
 			if h.taint.removalTimer != nil {
 				h.taint.removalTimer.Stop()
@@ -549,9 +535,7 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 
 // shutdown performs graceful shutdown with atomic state management
 func (h *HealthChecker) shutdown() {
-	if !h.stopped.Swap(true) {
-		close(h.stopCh)
-	}
+	h.stopped.Store(true)
 }
 
 func (h *HealthChecker) Stop(_ context.Context) error {
