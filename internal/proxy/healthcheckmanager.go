@@ -189,7 +189,6 @@ func (h *HealthCheckManager) SetWebSocketProxyReferences(wsProxies map[string]*W
 	}
 }
 
-
 // checkBlockLagAndTaint checks if a provider's block number is lagging behind others
 // Optimized to find max block and target checker in a single pass
 func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, updatedBlockNumber uint64) {
