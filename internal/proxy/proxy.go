@@ -82,7 +82,8 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		client:    client,
 	}
 
-	// Create providers for each target
+	// Create providers for each target with pre-allocated capacity
+	proxy.targets = make([]*NodeProvider, 0, len(config.Targets))
 	for _, target := range config.Targets {
 		p := NewNodeProvider(target, config.Timeout, config.Logger)
 		proxy.targets = append(proxy.targets, p)
@@ -312,24 +313,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
 
-	// Pre-compute connection type and get healthy providers
+	// Pre-compute connection type and get healthy providers (using cache)
 	connType := p.getConnectionType(r)
 	healthyProviders := p.getHealthyProviders(connType)
 	
 	if len(healthyProviders) == 0 {
-		// Collect provider status for diagnostic context
-		providerDetails := make([]string, 0, len(p.targets))
-		for _, target := range p.targets {
-			name := target.Name()
-			checker := p.hcm.GetHealthChecker(name, connType)
-			if checker == nil {
-				providerDetails = append(providerDetails, fmt.Sprintf("%s:no_checker", name))
-			} else if checker.IsTainted() {
-				providerDetails = append(providerDetails, fmt.Sprintf("%s:tainted", name))
-			} else {
-				providerDetails = append(providerDetails, fmt.Sprintf("%s:unknown", name))
-			}
-		}
+		providerDetails := p.collectProviderDetails(connType)
 		p.writeErrorResponse(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
 		return
 	}
@@ -338,12 +327,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	failedProviders := make(map[string]bool, len(healthyProviders))
 	maxRetries := 1 // Allow up to 1 retry for context cancellation
 	
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := range maxRetries + 1 {
 		for _, target := range healthyProviders {
 			name := target.Name()
 			
-			// Skip if provider already failed or became unhealthy
-			if failedProviders[name] || !p.hcm.IsHealthy(name, connType) {
+			// Skip if provider already failed (no need to re-check health - already filtered)
+			if failedProviders[name] {
 				continue
 			}
 
@@ -402,19 +391,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Collect provider status for diagnostic context
-	providerDetails := make([]string, 0, len(p.targets))
-	for _, target := range p.targets {
-		name := target.Name()
-		checker := p.hcm.GetHealthChecker(name, connType)
-		if checker == nil {
-			providerDetails = append(providerDetails, fmt.Sprintf("%s:no_checker", name))
-		} else if checker.IsTainted() {
-			providerDetails = append(providerDetails, fmt.Sprintf("%s:tainted", name))
-		} else {
-			providerDetails = append(providerDetails, fmt.Sprintf("%s:unknown", name))
-		}
-	}
+	providerDetails := p.collectProviderDetails(connType)
 	p.writeErrorResponse(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
 }
 
@@ -442,5 +419,24 @@ func (p *Proxy) getHealthyProviders(connType string) []*NodeProvider {
 		}
 	}
 	return healthy
+}
+
+// collectProviderDetails collects diagnostic information about all providers
+func (p *Proxy) collectProviderDetails(connType string) []string {
+	providerDetails := make([]string, 0, len(p.targets))
+	for _, target := range p.targets {
+		name := target.Name()
+		checker := p.hcm.GetHealthChecker(name, connType)
+		var status string
+		if checker == nil {
+			status = name + ":no_checker"
+		} else if checker.IsTainted() {
+			status = name + ":tainted"
+		} else {
+			status = name + ":unknown"
+		}
+		providerDetails = append(providerDetails, status)
+	}
+	return providerDetails
 }
 

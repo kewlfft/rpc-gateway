@@ -591,7 +591,7 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 	// Calculate timing values
 	now := time.Now()
 	var wait time.Duration
-	if now.Sub(h.taint.lastRemoval) <= cfg.ResetWaitDuration {
+	if time.Since(h.taint.lastRemoval) <= cfg.ResetWaitDuration {
 		wait = h.taint.waitTime * 2
 		if wait > cfg.MaxWaitTime {
 			wait = cfg.MaxWaitTime

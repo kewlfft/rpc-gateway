@@ -1,8 +1,6 @@
 module github.com/kewlfft/rpc-gateway
 
-go 1.24.0
-
-toolchain go1.24.3
+go 1.25.4
 
 require (
 	github.com/gorilla/websocket v1.5.3

@@ -32,7 +32,8 @@ func (r *RPCGateway) Start(c context.Context) error {
 		return fmt.Errorf("rpc-gateway port not available: %w", err)
 	}
 	if r.config.Metrics.IsEnabled() {
-		if err := checkPortAvailability(fmt.Sprintf("%d", r.config.Metrics.Port)); err != nil {
+		portStr := fmt.Sprintf("%d", r.config.Metrics.Port)
+		if err := checkPortAvailability(portStr); err != nil {
 			return fmt.Errorf("metrics port not available: %w", err)
 		}
 	}
@@ -47,7 +48,7 @@ func (r *RPCGateway) Start(c context.Context) error {
 	// Start metrics server if enabled
 	if r.config.Metrics.IsEnabled() {
 		go func() {
-			if err := r.metrics.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := r.metrics.Start(); isServerClosedError(err) {
 				slog.Error("metrics server error", "error", err)
 			}
 		}()
@@ -55,7 +56,7 @@ func (r *RPCGateway) Start(c context.Context) error {
 
 	// Start main server
 	go func() {
-		if err := r.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := r.server.ListenAndServe(); isServerClosedError(err) {
 			slog.Error("rpc-gateway server error", "error", err)
 		}
 	}()
@@ -65,7 +66,7 @@ func (r *RPCGateway) Start(c context.Context) error {
 
 // checkPortAvailability checks if a port is available for use
 func checkPortAvailability(port string) error {
-	addr := fmt.Sprintf(":%s", port)
+	addr := ":" + port
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("port %s is not available: %w", port, err)
@@ -74,18 +75,23 @@ func checkPortAvailability(port string) error {
 	return nil
 }
 
+// isServerClosedError checks if an error is http.ErrServerClosed (expected during shutdown)
+func isServerClosedError(err error) bool {
+	return err != nil && !errors.Is(err, http.ErrServerClosed)
+}
+
 func (r *RPCGateway) Stop(c context.Context) error {
 	// Stop servers in reverse order of dependency
 	slog.Info("shutting down rpc-gateway")
 
 	// Stop main server
-	if err := r.server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := r.server.Close(); isServerClosedError(err) {
 		slog.Error("error stopping rpc-gateway server", "error", err)
 	}
 
 	// Stop metrics server if enabled
 	if r.config.Metrics.IsEnabled() {
-		if err := r.metrics.Stop(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := r.metrics.Stop(); isServerClosedError(err) {
 			slog.Error("error stopping metrics server", "error", err)
 		}
 	}
@@ -103,19 +109,20 @@ func (r *RPCGateway) Stop(c context.Context) error {
 
 func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	// Set log level based on LOG_LEVEL environment variable
+	logLevelStr := strings.ToLower(os.Getenv("LOG_LEVEL"))
 	logLevel := map[string]slog.Level{
 		"debug": slog.LevelDebug,
 		"info":  slog.LevelInfo,
 		"warn":  slog.LevelWarn,
 		"error": slog.LevelError,
-	}[strings.ToLower(os.Getenv("LOG_LEVEL"))]
+	}[logLevelStr]
 	if logLevel == 0 {
 		logLevel = slog.LevelWarn // Default to warn
 	}
 
-	// Initialize maps for proxies and health check managers
-	proxies := make(map[string]proxy.ChainTypeHandler)
-	hcms := make(map[string]*proxy.HealthCheckManager)
+	// Initialize maps for proxies and health check managers with known capacity
+	proxies := make(map[string]proxy.ChainTypeHandler, len(config.Proxies))
+	hcms := make(map[string]*proxy.HealthCheckManager, len(config.Proxies))
 
 	logger := slog.New(
 		slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
@@ -174,6 +181,8 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	for path, p := range proxies {
 		// Get the chain type for this proxy
 		chainType := p.GetChainType()
+		// Pre-compute path prefix to avoid string concatenation on every request
+		pathPrefix := "/" + path
 
 		// Define a reusable handler constructor with optimized path handling
 		handler := func(p http.Handler) http.HandlerFunc {
@@ -186,13 +195,13 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 
 				// Handle path based on chain type
 				if chainType == "tron" {
-					if trimmed := strings.TrimPrefix(r.URL.Path, "/"+path); trimmed != "" {
+					if trimmed := strings.TrimPrefix(r.URL.Path, pathPrefix); trimmed != "" {
 						r.URL.Path = trimmed
 					} else {
 						r.URL.Path = "/"
 					}
 				} else {
-					r.URL.Path = strings.TrimPrefix(r.URL.Path, "/"+path)
+					r.URL.Path = strings.TrimPrefix(r.URL.Path, pathPrefix)
 				}
 
 				// Forward the request with original method and query params
@@ -201,7 +210,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}
 
 		// Register base path and trailing slash path
-		basePath := fmt.Sprintf("/%s", path)
+		basePath := pathPrefix
 		r.Handle(basePath, handler(p))
 		r.Handle(basePath+"/", handler(p))
 		
@@ -217,7 +226,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		hcms:    hcms,
 		metrics: metrics.NewServer(config.Metrics),
 		server: &http.Server{
-			Addr:              fmt.Sprintf(":%s", config.Port),
+			Addr:              ":" + config.Port,
 			Handler:           r,
 			WriteTimeout:      time.Second * 15,
 			ReadTimeout:       time.Second * 15,
@@ -239,13 +248,11 @@ func NewRPCGatewayFromConfigFile(s string) (*RPCGateway, error) {
 		return nil, err
 	}
 
-	slog.Info("Loaded config", "proxies", len(config.Proxies), "paths", func() []string {
-		paths := make([]string, len(config.Proxies))
-		for i, p := range config.Proxies {
-			paths[i] = p.Path
-		}
-		return paths
-	}())
+	paths := make([]string, len(config.Proxies))
+	for i, p := range config.Proxies {
+		paths[i] = p.Path
+	}
+	slog.Info("Loaded config", "proxies", len(config.Proxies), "paths", paths)
 
 	return NewRPCGateway(config)
 }

@@ -191,18 +191,26 @@ func (h *HealthCheckManager) SetWebSocketProxyReferences(wsProxies map[string]*W
 
 
 // checkBlockLagAndTaint checks if a provider's block number is lagging behind others
+// Optimized to find max block and target checker in a single pass
 func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, updatedBlockNumber uint64) {
 	var maxBlock uint64
+	var targetChecker *HealthChecker
 
-	// Find the maximum block number across all providers
+	// Find the maximum block number and target checker in a single pass
 	for _, checker := range h.checkers {
-		if bn := checker.BlockNumber(); bn > maxBlock {
+		bn := checker.BlockNumber()
+		if bn > maxBlock {
 			maxBlock = bn
+		}
+		// Also find the target checker while we're iterating
+		if checker.Name() == updatedRPCName {
+			targetChecker = checker
 		}
 	}
 
 	// If the updated provider is too far behind, taint it
-	if maxBlock > updatedBlockNumber && (maxBlock - updatedBlockNumber) > uint64(h.config.BlockDiffThreshold) {
+	// Equivalent to: maxBlock > updatedBlockNumber && (maxBlock-updatedBlockNumber) > threshold
+	if maxBlock > updatedBlockNumber+uint64(h.config.BlockDiffThreshold) {
 		h.logger.Info("provider block number too far behind",
 			"provider", updatedRPCName,
 			"blockNumber", updatedBlockNumber,
@@ -210,12 +218,9 @@ func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, update
 			"threshold", h.config.BlockDiffThreshold,
 			"path", h.path)
 
-		// Find and taint the specific provider
-		for _, checker := range h.checkers {
-			if checker.Name() == updatedRPCName {
-				checker.TaintHealthCheck()
-				break
-			}
+		// Taint the specific provider (already found in loop above)
+		if targetChecker != nil {
+			targetChecker.TaintHealthCheck()
 		}
 	}
 }

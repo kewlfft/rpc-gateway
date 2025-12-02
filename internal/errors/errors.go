@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 )
 
 // WriteJSONRPCError writes an error response in JSON-RPC format and logs the error
@@ -13,12 +14,10 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 	var requestID any
 
 	// Extract request ID from body bytes if provided
-	if bodyBytes != nil {
-		if len(bodyBytes) > 0 && r.Header.Get("Content-Type") == "application/json" {
-			var req map[string]any
-			if json.Unmarshal(bodyBytes, &req) == nil && req["jsonrpc"] != nil {
-				requestID = req["id"]
-			}
+	if len(bodyBytes) > 0 && r.Header.Get("Content-Type") == "application/json" {
+		var req map[string]any
+		if json.Unmarshal(bodyBytes, &req) == nil && req["jsonrpc"] != nil {
+			requestID = req["id"]
 		}
 	}
 
@@ -40,14 +39,14 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 	})
 
 	// Log the error with relevant context
-	logAttrs := []any{
+	logAttrs := slices.Grow([]any{
 		"message", message,
 		"status", status,
 		"method", r.Method,
 		"path", r.URL.Path,
 		"request_id", requestID,
 		"remote_addr", r.RemoteAddr,
-	}
+	}, len(providerDetails)*2)
 	if len(providerDetails) > 0 {
 		logAttrs = append(logAttrs, "providers", providerDetails)
 	}
