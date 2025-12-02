@@ -113,8 +113,9 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 }
 
 // writeErrorResponse writes an error response in the appropriate format based on the request
-func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, message string, status int) {
-	errors.WriteJSONRPCError(w, r, message, status)
+// bodyBytes is optional - if provided, it will be used to extract the request ID
+func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, message string, status int, bodyBytes ...[]byte) {
+	errors.WriteJSONRPCError(w, r, message, status, bodyBytes...)
 }
 
 // copyResponse copies headers, status code, and body from the source response to the target response writer
@@ -306,6 +307,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
+		// Restore body for potential error handling
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
 
 	// Pre-compute connection type and get healthy providers
@@ -313,7 +316,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	healthyProviders := p.getHealthyProviders(connType)
 	
 	if len(healthyProviders) == 0 {
-		p.writeErrorResponse(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable)
+		p.writeErrorResponse(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes)
 		return
 	}
 
@@ -385,7 +388,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	p.writeErrorResponse(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable)
+	p.writeErrorResponse(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes)
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy

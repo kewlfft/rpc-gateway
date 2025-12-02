@@ -1,22 +1,19 @@
 package errors
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 )
 
 // WriteJSONRPCError writes an error response in JSON-RPC format and logs the error
-func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, status int) {
+// bodyBytes is used to extract the request ID from the JSON-RPC request
+func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, status int, bodyBytes ...[]byte) {
 	var requestID any
 
-	if r.Body != nil {
-		body, _ := io.ReadAll(r.Body)
-		r.Body.Close()
-		r.Body = io.NopCloser(bytes.NewReader(body))
-
+	// Extract request ID from body bytes if provided
+	if len(bodyBytes) > 0 && bodyBytes[0] != nil {
+		body := bodyBytes[0]
 		if len(body) > 0 && r.Header.Get("Content-Type") == "application/json" {
 			var req map[string]any
 			if json.Unmarshal(body, &req) == nil && req["jsonrpc"] != nil {
