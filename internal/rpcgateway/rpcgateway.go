@@ -183,44 +183,30 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 
 	// Handle each proxy path
 	for path, p := range proxies {
-		// Get the chain type for this proxy
 		chainType := p.GetChainType()
-		// Pre-compute path prefix to avoid string concatenation on every request
 		pathPrefix := "/" + path
+		isTron := chainType == "tron"
 
-		// Define a reusable handler constructor with optimized path handling
-		handler := func(p http.Handler) http.HandlerFunc {
-			return func(w http.ResponseWriter, r *http.Request) {
-				// Fast path for WebSocket requests
-				if websocket.IsWebSocketUpgrade(r) {
-					p.ServeHTTP(w, r)
-					return
-				}
-
-				// Handle path based on chain type
-				if chainType == "tron" {
-					if trimmed := strings.TrimPrefix(r.URL.Path, pathPrefix); trimmed != "" {
-						r.URL.Path = trimmed
-					} else {
-						r.URL.Path = "/"
-					}
-				} else {
-					r.URL.Path = strings.TrimPrefix(r.URL.Path, pathPrefix)
-				}
-
-				// Forward the request with original method and query params
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			// WebSocket requests don't need path modification
+			if websocket.IsWebSocketUpgrade(r) {
 				p.ServeHTTP(w, r)
+				return
 			}
+			// Trim path prefix and handle tron special case
+			trimmed := strings.TrimPrefix(r.URL.Path, pathPrefix)
+			if isTron && trimmed == "" {
+				trimmed = "/"
+			}
+			r.URL.Path = trimmed
+			p.ServeHTTP(w, r)
 		}
 
-		// Register base path and trailing slash path
-		basePath := pathPrefix
-		r.Handle(basePath, handler(p))
-		r.Handle(basePath+"/", handler(p))
-		
-		// Add catch-all route for Tron chain type
-		if chainType == "tron" {
-			r.Handle(basePath+"/*", handler(p))
+		// Register routes: base path, trailing slash, and catch-all for tron
+		r.Handle(pathPrefix, http.HandlerFunc(handler))
+		r.Handle(pathPrefix+"/", http.HandlerFunc(handler))
+		if isTron {
+			r.Handle(pathPrefix+"/*", http.HandlerFunc(handler))
 		}
 	}
 
