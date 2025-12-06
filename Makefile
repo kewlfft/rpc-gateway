@@ -11,7 +11,7 @@ LDFLAGS=-s -w -extldflags '-static'
 BUILD_FLAGS=-trimpath -gcflags="-l=4 -B -C -m=2" -asmflags="-trimpath" -tags=!test -race=false
 VERSION_FLAGS=-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildTime=$(BUILD_TIME)
 
-.PHONY: all build clean test lint
+.PHONY: all build clean test lint upgrade-deps
 
 all: clean build
 
@@ -30,5 +30,11 @@ test:
 
 lint:
 	golangci-lint run
+
+upgrade-deps:
+	@echo "Upgrading all dependencies..."
+	go get -u ./...
+	go mod tidy
+	@echo "Dependencies upgraded!"
 
 .DEFAULT_GOAL := build 
