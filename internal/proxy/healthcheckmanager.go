@@ -219,7 +219,7 @@ func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, update
 
 		// Taint the specific provider (already found in loop above)
 		if targetChecker != nil {
-			targetChecker.TaintHealthCheck()
+			targetChecker.TaintHealthCheck("block lag", nil)
 		}
 	}
 }

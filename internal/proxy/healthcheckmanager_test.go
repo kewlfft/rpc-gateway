@@ -33,7 +33,7 @@ func TestBlockLagAndTaint(t *testing.T) {
 	threshold := uint64(2)
 	maxBlock := hc2.BlockNumber()
 	if maxBlock-hc1.BlockNumber() > threshold {
-		hc1.TaintHealthCheck()
+		hc1.TaintHealthCheck("block lag", nil)
 	}
 	assert.True(t, hc1.IsTainted())
 	assert.False(t, hc2.IsTainted())
@@ -41,7 +41,7 @@ func TestBlockLagAndTaint(t *testing.T) {
 	// Case 3: Lag within threshold, no taint
 	setBlocks(100, 101)
 	if hc2.BlockNumber()-hc1.BlockNumber() > threshold {
-		hc1.TaintHealthCheck()
+		hc1.TaintHealthCheck("block lag", nil)
 	}
 	assert.False(t, hc1.IsTainted())
 	assert.False(t, hc2.IsTainted())

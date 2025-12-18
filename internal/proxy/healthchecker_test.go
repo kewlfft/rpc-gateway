@@ -54,7 +54,7 @@ func TestBasicHealthchecker(t *testing.T) {
 	assert.True(t, healthchecker.IsHealthy())
 
 	// Taint the health checker
-	healthchecker.TaintHealthCheck()
+	healthchecker.TaintHealthCheck("test", nil)
 	assert.True(t, healthchecker.IsTainted())
 	assert.False(t, healthchecker.IsHealthy())
 
@@ -110,7 +110,7 @@ func TestHealthCheckerTaint(t *testing.T) {
 		MaxWaitTime:       time.Second,
 		ResetWaitDuration: time.Second,
 		Reason:           "test taint",
-	})
+	}, "test taint", nil)
 
 	// Verify it's tainted
 	assert.True(t, checker.IsTainted(), "should be tainted after taint call")
@@ -130,7 +130,7 @@ func TestHealthCheckerTaint(t *testing.T) {
 		MaxWaitTime:       time.Second,
 		ResetWaitDuration: time.Millisecond * 50, // Short reset duration to ensure we're within it
 		Reason:           "test taint",
-	})
+	}, "test taint", nil)
 
 	// Verify it's tainted again
 	assert.True(t, checker.IsTainted(), "should be tainted after second taint call")
@@ -150,7 +150,7 @@ func TestHealthCheckerTaint(t *testing.T) {
 		MaxWaitTime:       time.Millisecond * 300,
 		ResetWaitDuration: time.Millisecond * 50,
 		Reason:           "test taint",
-	})
+	}, "test taint", nil)
 
 	// Verify it's tainted again
 	assert.True(t, checker.IsTainted(), "should be tainted after third taint call")
@@ -190,7 +190,7 @@ func TestHealthCheckerTaintRemoval(t *testing.T) {
 		MaxWaitTime:       time.Second,
 		ResetWaitDuration: time.Second,
 		Reason:           "test taint",
-	})
+	}, "test taint", nil)
 
 	// Verify it's tainted
 	assert.True(t, checker.IsTainted(), "should be tainted after taint call")
