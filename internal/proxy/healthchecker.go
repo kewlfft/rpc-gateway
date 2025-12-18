@@ -140,6 +140,7 @@ type HealthChecker struct {
 	config              HealthCheckerConfig
 	httpClient          *http.Client
 	blockNumber        atomic.Uint64
+	gasCheckCounter    atomic.Uint32
 	mu                 sync.RWMutex // Only for taint state
 	taintRemoveCh      chan struct{}
 	stopped           atomic.Bool
@@ -471,6 +472,12 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 func (h *HealthChecker) checkAndSetGasLeftHealth() {
 	// Skip gas left check for non-EVM chains
 	if h.config.ChainType != "evm" {
+		return
+	}
+
+	// Run gas check only on every second health cycle, starting from the second one.
+	// Sequence per provider: 1st call -> skip, 2nd -> run, 3rd -> skip, 4th -> run, ...
+	if h.gasCheckCounter.Add(1)%2 != 0 {
 		return
 	}
 
