@@ -458,7 +458,13 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 
 	blockNumber, err := h.checkBlockNumber(ctx)
 	if err != nil {
-		h.TaintHealthCheck("block number check failure", err)
+		// Detailed cause/error at DEBUG; state change is logged inside TaintHealthCheck.
+		h.config.Logger.Debug("provider tainted due to block number check failure",
+			"connectionType", h.config.ConnectionType,
+			"provider", h.config.Name,
+			"error", err,
+			"path", h.config.Path)
+		h.TaintHealthCheck()
 		return
 	}
 
@@ -486,7 +492,13 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 
 	_, err := h.checkGasLeft(ctx)
 	if err != nil {
-		h.TaintHealthCheck("gas left check failure", err)
+		// Detailed cause/error at DEBUG; state change is logged inside TaintHealthCheck.
+		h.config.Logger.Debug("provider tainted due to gas left check failure",
+			"connectionType", h.config.ConnectionType,
+			"provider", h.config.Name,
+			"error", err,
+			"path", h.config.Path)
+		h.TaintHealthCheck()
 		return
 	}
 }
@@ -553,8 +565,8 @@ func (h *HealthChecker) IsTainted() bool {
 	return h.isTainted.Load()
 }
 
-// Taint marks the provider as tainted with backoff and optional context.
-func (h *HealthChecker) Taint(cfg TaintConfig, cause string, err error) {
+// Taint marks the provider as tainted with backoff.
+func (h *HealthChecker) Taint(cfg TaintConfig) {
 	// Fast path: if already tainted, skip repeated taint work and logs
 	if h.isTainted.Load() {
 		return
@@ -615,8 +627,6 @@ func (h *HealthChecker) Taint(cfg TaintConfig, cause string, err error) {
 		"name", h.config.Name,
 		"path", h.config.Path,
 		"reason", cfg.Reason,
-		"cause", cause,
-		"error", err,
 		"retry_sec", wait.Seconds(),
 		"next_retry", nextRetry,
 	)
@@ -624,12 +634,12 @@ func (h *HealthChecker) Taint(cfg TaintConfig, cause string, err error) {
 
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
 func (h *HealthChecker) TaintHTTP() {
-	h.Taint(httpTaintConfig, "http request failure", nil)
+	h.Taint(httpTaintConfig)
 }
 
 // TaintHealthCheck is a convenience method that uses the health check taint configuration
-func (h *HealthChecker) TaintHealthCheck(cause string, err error) {
-	h.Taint(healthCheckTaintConfig, cause, err)
+func (h *HealthChecker) TaintHealthCheck() {
+	h.Taint(healthCheckTaintConfig)
 }
 
 func (h *HealthChecker) RemoveTaint() {
