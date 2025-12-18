@@ -97,7 +97,7 @@ var (
 	// Health check taint configuration
 	healthCheckTaintConfig = TaintConfig{
 		InitialWaitTime:   time.Second * 30,
-		MaxWaitTime:       time.Minute * 10,
+		MaxWaitTime:       time.Minute * 20,
 		ResetWaitDuration: time.Minute * 5,
 		Reason:           "health check failure",
 	}
@@ -105,7 +105,7 @@ var (
 	// HTTP request taint configuration (faster cycle)
 	httpTaintConfig = TaintConfig{
 		InitialWaitTime:   time.Second * 10,
-		MaxWaitTime:       time.Second * 40,
+		MaxWaitTime:       time.Second * 60,
 		ResetWaitDuration: time.Second * 20,
 		Reason:           "HTTP error",
 	}
@@ -605,7 +605,6 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 	h.taint.config = cfg
 	h.taint.lastRemoval = now
 	h.taint.waitTime = wait
-
 	h.mu.Unlock()
 
 	// Logging
@@ -638,17 +637,17 @@ func (h *HealthChecker) RemoveTaint() {
 	h.mu.Lock()
 	h.taint.lastRemoval = time.Now()
 	h.taint.removalTimer = nil
+	nextWait := h.taint.waitTime
 	h.mu.Unlock()
 	
-	// Log after all state updates are complete
+	// Log after all state updates are complete, using the captured wait time
 	h.config.Logger.Info("taint removed", 
 		"connectionType", h.config.ConnectionType,
 		"path", h.config.Path,
 		"name", h.config.Name,
-		"nextTaintWait", h.taint.waitTime.Seconds())
+		"nextTaintWait", nextWait.Seconds())
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {
 	return h.blockNumber.Load()
 }
-

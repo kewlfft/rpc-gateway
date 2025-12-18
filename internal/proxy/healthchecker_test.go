@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,4 +244,43 @@ func TestHealthCheckerTaintHTTP(t *testing.T) {
 	healthchecker.TaintHTTP()
 	finalWaitTime := healthchecker.taint.waitTime
 	assert.LessOrEqual(t, finalWaitTime, httpTaintConfig.MaxWaitTime)
+}
+
+// TestHealthCheckerConcurrentTaint verifies that tainting operations are safe under concurrency.
+// This test is most valuable when run with the race detector:
+//   go test -race ./internal/proxy -run TestHealthCheckerConcurrentTaint
+func TestHealthCheckerConcurrentTaint(t *testing.T) {
+	healthchecker, err := NewHealthChecker(HealthCheckerConfig{
+		URL:      "http://localhost:8545",
+		Name:     "test",
+		Path:     "test",
+		Interval: time.Millisecond * 10,
+		Timeout:  time.Millisecond * 50,
+		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go healthchecker.Start(ctx)
+
+	var wg sync.WaitGroup
+	const workers = 8
+	const iterations = 100
+
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				// Interleave tainting and checks to exercise concurrent access paths.
+				healthchecker.TaintHTTP()
+				_ = healthchecker.IsTainted()
+				_ = healthchecker.IsHealthy()
+				healthchecker.RemoveTaint()
+			}
+		}()
+	}
+
+	wg.Wait()
 }
