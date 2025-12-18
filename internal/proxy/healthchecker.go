@@ -557,10 +557,13 @@ func (h *HealthChecker) IsTainted() bool {
 }
 
 func (h *HealthChecker) Taint(cfg TaintConfig) {
-	// Only call cleanup callback if we're not already tainted (first time tainting)
-	// This prevents multiple unsubscribe attempts for the same failure
-	wasAlreadyTainted := h.isTainted.Load()
-	if !wasAlreadyTainted && h.config.ConnectionType == "websocket" {
+	// Fast path: if already tainted, skip repeated taint work and logs
+	if h.isTainted.Load() {
+		return
+	}
+
+	// Only call cleanup callback on first tainting
+	if h.config.ConnectionType == "websocket" {
 		if callback, ok := h.onBeforeTaint.Load().(func()); ok && callback != nil {
 			callback()
 		}
