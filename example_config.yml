@@ -76,7 +76,7 @@ proxies:
             url: "wss://solana-rpc.publicnode.com"
 
   - path: "arb"
-    timeout: "2s"
+    timeout: "5s"
     healthChecks:
       interval: "60s"
       blockDiffThreshold: 2
