@@ -380,7 +380,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// Client disconnected - don't retry
 				return
 			}
-			
+
+			// If the request failed but we already sent headers to the client,
+			// we MUST NOT retry because the stream is already "committed" and corrupted.
+			if w.Header().Get("X-Status-Set") != "" {
+				p.logger.Warn("Provider failed during streaming, cannot retry to avoid response corruption",
+					"provider", name,
+					"path", p.hcm.path)
+				return
+			}
+
 			// Mark this provider as failed for this request
 			failedProviders[name] = true
 		}

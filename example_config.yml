@@ -74,3 +74,14 @@ proxies:
             url: "https://solana-rpc.publicnode.com"
           websocket:
             url: "wss://solana-rpc.publicnode.com"
+
+  - path: "arb"
+    timeout: "2s"
+    healthChecks:
+      interval: "60s"
+      blockDiffThreshold: 2
+    targets:
+      - name: "arbitrum-one"
+        connection:
+          http:
+            url: "https://arb1.arbitrum.io/rpc"
