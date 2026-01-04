@@ -143,7 +143,6 @@ type HealthChecker struct {
 	gasCheckCounter    atomic.Uint32
 	mu                 sync.RWMutex // Only for taint state
 	taintRemoveCh      chan struct{}
-	stopped           atomic.Bool
 	isTainted         atomic.Bool
 
 	// Taint state
@@ -526,7 +525,6 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 			h.config.Logger.Info("health checker shutting down gracefully", 
 				"provider", h.config.Name,
 				"path", h.config.Path)
-			h.shutdown()
 			return
 		case <-timer.C:
 			h.CheckAndSetHealth()
@@ -542,13 +540,7 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 	}
 }
 
-// shutdown performs graceful shutdown with atomic state management
-func (h *HealthChecker) shutdown() {
-	h.stopped.Store(true)
-}
-
 func (h *HealthChecker) Stop(_ context.Context) error {
-	h.shutdown()
 	// Signal cleanup of taint removal timer
 	select {
 	case h.taintRemoveCh <- struct{}{}:

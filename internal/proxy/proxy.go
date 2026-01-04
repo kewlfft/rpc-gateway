@@ -89,6 +89,11 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 	proxy.targets = make([]*NodeProvider, 0, len(config.Targets))
 	for _, target := range config.Targets {
 		p := NewNodeProvider(target, config.Timeout, config.Logger)
+		// Link health checkers directly to the node provider for high performance health checks
+		p.SetHealthCheckers(
+			hcm.GetHealthChecker(target.Name, "http"),
+			hcm.GetHealthChecker(target.Name, "websocket"),
+		)
 		proxy.targets = append(proxy.targets, p)
 	}
 
@@ -167,13 +172,21 @@ func (p *Proxy) recordMetrics(method, name, status string, start time.Time) int6
 }
 
 // handleProviderFailure handles provider failure by recording metrics, tainting the provider, and logging
-func (p *Proxy) handleProviderFailure(name string, r *http.Request, start time.Time, statusCode int, err error) {
+func (p *Proxy) handleProviderFailure(target *NodeProvider, r *http.Request, start time.Time, statusCode int, err error) {
+	name := target.Name()
 	duration := p.recordMetrics(r.Method, name, "error", start)
 	metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
 
 	connectionType := p.getConnectionType(r)
 
-	if hc := p.hcm.GetHealthChecker(name, connectionType); hc != nil {
+	var hc *HealthChecker
+	if connectionType == "websocket" {
+		hc = target.wsChecker
+	} else {
+		hc = target.httpChecker
+	}
+
+	if hc != nil {
 		hc.TaintHTTP()
 	}
 
@@ -219,7 +232,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"method", r.Method,
 			"path", r.URL.Path,
 			"provider_url", urlPath)
-		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
+		p.handleProviderFailure(target, r, start, http.StatusServiceUnavailable, err)
 		return 0
 	}
 
@@ -254,7 +267,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 				"url", urlPath,
 				"method", r.Method)
 		}
-		p.handleProviderFailure(name, r, start, http.StatusServiceUnavailable, err)
+		p.handleProviderFailure(target, r, start, http.StatusServiceUnavailable, err)
 		return 0
 	}
 	defer resp.Body.Close()
@@ -266,7 +279,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"status", resp.StatusCode,
 			"method", r.Method,
 			"url", urlPath)
-		p.handleProviderFailure(name, r, start, resp.StatusCode, nil)
+		p.handleProviderFailure(target, r, start, resp.StatusCode, nil)
 		return 0
 	}
 
@@ -285,7 +298,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"error", err,
 			"url", urlPath,
 			"method", r.Method)
-		p.handleProviderFailure(name, r, start, resp.StatusCode, err)
+		p.handleProviderFailure(target, r, start, resp.StatusCode, err)
 		return 0
 	}
 
@@ -325,80 +338,58 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track failed providers to avoid retrying the same provider
-	failedProviders := make(map[string]bool, len(healthyProviders))
-	maxRetries := 1 // Allow up to 1 retry for context cancellation
-	
-	for attempt := range maxRetries + 1 {
-		for _, target := range healthyProviders {
-			name := target.Name()
-			
-			// Skip if provider already failed (no need to re-check health - already filtered)
-			if failedProviders[name] {
+	for _, target := range healthyProviders {
+		name := target.Name()
+		
+		if isWebSocket {
+			wsProxy := target.GetWebSocketProxy()
+			if wsProxy == nil {
 				continue
 			}
 
-			if isWebSocket {
-				wsProxy := target.GetWebSocketProxy()
-				if wsProxy == nil {
-					failedProviders[name] = true
-					continue
+			// Create upstream connection BEFORE upgrading (upgrade commits HTTP response)
+			// If this fails, we can try next provider without committing to the client
+			if targetConn := wsProxy.createNewConnection(); targetConn == nil {
+				p.logger.Debug("WebSocket connection failed",
+					"provider", name)
+				if hc := p.hcm.GetHealthChecker(name, connType); hc != nil {
+					hc.TaintHTTP()
 				}
-
-				// Create upstream connection BEFORE upgrading (upgrade commits HTTP response)
-				// If this fails, we can try next provider without committing to the client
-				if targetConn := wsProxy.createNewConnection(); targetConn == nil {
-					p.logger.Debug("WebSocket connection failed",
-						"provider", name)
-					failedProviders[name] = true
-					if hc := p.hcm.GetHealthChecker(name, connType); hc != nil {
-						hc.TaintHTTP()
-					}
-					p.logger.Debug("trying next WebSocket provider",
-						"failed_provider", name,
-						"failed_count", len(failedProviders),
-						"total_providers", len(healthyProviders))
-					continue // Try next provider
-				} else {
-					// Close test connection - real one will be created in ServeHTTP
-					targetConn.Close()
-				}
-
-				// Connection successful - safe to upgrade
-				target.ServeHTTP(w, r)
-				return
+				p.logger.Debug("trying next WebSocket provider",
+					"failed_provider", name,
+					"total_providers", len(healthyProviders))
+				continue // Try next provider
+			} else {
+				// Close test connection - real one will be created in ServeHTTP
+				targetConn.Close()
 			}
 
-			url := target.config.Connection.HTTP.URL
-			if p.chainType == "tron" {
-				url += r.URL.Path
-			}
+			// Connection successful - safe to upgrade
+			target.ServeHTTP(w, r)
+			return
+		}
 
-			result := p.forwardRequest(w, r, bodyBytes, start, target, url)
-			if result == 1 {
-				// Success
-				return
-			} else if result == -1 {
-				// Client disconnected - don't retry
-				return
-			}
+		url := target.config.Connection.HTTP.URL
+		if p.chainType == "tron" {
+			url += r.URL.Path
+		}
 
-			// If the request failed but we already sent headers to the client,
-			// we MUST NOT retry because the stream is already "committed" and corrupted.
-			if w.Header().Get("X-Status-Set") != "" {
-				p.logger.Warn("Provider failed during streaming, cannot retry to avoid response corruption",
-					"provider", name,
-					"path", p.hcm.path)
-				return
-			}
-
-			// Mark this provider as failed for this request
-			failedProviders[name] = true
+		result := p.forwardRequest(w, r, bodyBytes, start, target, url)
+		if result == 1 {
+			// Success
+			return
+		} else if result == -1 {
+			// Client disconnected - don't retry
+			return
 		}
 		
-		// If we've tried all providers and this is not the last attempt, wait briefly before retry
-		if attempt < maxRetries && len(failedProviders) < len(healthyProviders) {
-			time.Sleep(time.Millisecond * 50) // Reduced delay
+		// If the request failed but we already sent headers to the client,
+		// we MUST NOT retry because the stream is already "committed" and corrupted.
+		if w.Header().Get("X-Status-Set") != "" {
+			p.logger.Warn("Provider failed during streaming, cannot retry to avoid response corruption",
+				"provider", name,
+				"path", p.hcm.path)
+			return
 		}
 	}
 
@@ -425,7 +416,7 @@ func (p *Proxy) GetTargets() []*NodeProvider {
 func (p *Proxy) getHealthyProviders(connType string) []*NodeProvider {
 	healthy := make([]*NodeProvider, 0, len(p.targets))
 	for _, target := range p.targets {
-		if p.hcm.IsHealthy(target.Name(), connType) {
+		if target.IsHealthy(connType) {
 			healthy = append(healthy, target)
 		}
 	}
@@ -434,10 +425,16 @@ func (p *Proxy) getHealthyProviders(connType string) []*NodeProvider {
 
 // collectProviderDetails collects diagnostic information about all providers
 func (p *Proxy) collectProviderDetails(connType string) []string {
-	providerDetails := make([]string, 0, len(p.targets))
-	for _, target := range p.targets {
+	providerDetails := make([]string, len(p.targets))
+	for i, target := range p.targets {
 		name := target.Name()
-		checker := p.hcm.GetHealthChecker(name, connType)
+		var checker *HealthChecker
+		if connType == "websocket" {
+			checker = target.wsChecker
+		} else {
+			checker = target.httpChecker
+		}
+
 		var status string
 		if checker == nil {
 			status = name + ":no_checker"
@@ -446,7 +443,7 @@ func (p *Proxy) collectProviderDetails(connType string) []string {
 		} else {
 			status = name + ":unknown"
 		}
-		providerDetails = append(providerDetails, status)
+		providerDetails[i] = status
 	}
 	return providerDetails
 }

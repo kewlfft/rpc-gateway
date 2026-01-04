@@ -6,33 +6,6 @@ import (
 	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-)
-
-var (
-	metricRPCProviderInfo = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "rpc_provider_info",
-			Help: "Information about the RPC provider",
-		},
-		[]string{"index", "name", "proxy"},
-	)
-	metricRPCProviderStatus = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "rpc_provider_status",
-			Help: "Status of the RPC provider (1 = healthy, 0 = unhealthy)",
-		},
-		[]string{"name", "status", "proxy"},
-	)
-	metricRPCProviderBlockNumber = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "rpc_provider_block_number",
-			Help: "Current block number of the RPC provider",
-		},
-		[]string{"name", "proxy"},
-	)
 )
 
 // HealthCheckManager manages health checks for multiple node providers
@@ -149,18 +122,6 @@ func (h *HealthCheckManager) Stop(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// IsHealthy checks if a provider is healthy for a specific connection type
-func (h *HealthCheckManager) IsHealthy(name string, connectionType string) bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	key := fmt.Sprintf("%s:%s", name, connectionType)
-	if checker, exists := h.checkerMap[key]; exists {
-		return checker.IsHealthy()
-	}
-	return false
 }
 
 // GetHealthChecker returns the health checker for a provider and connection type

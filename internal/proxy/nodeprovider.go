@@ -8,8 +8,10 @@ import (
 )
 
 type NodeProvider struct {
-	config  NodeProviderConfig
-	wsProxy http.Handler
+	config      NodeProviderConfig
+	wsProxy     http.Handler
+	httpChecker *HealthChecker
+	wsChecker   *HealthChecker
 }
 
 func NewNodeProvider(config NodeProviderConfig, timeout time.Duration, logger *slog.Logger) *NodeProvider {
@@ -22,6 +24,20 @@ func NewNodeProvider(config NodeProviderConfig, timeout time.Duration, logger *s
 		config:  config,
 		wsProxy: wsProxy,
 	}
+}
+
+// SetHealthCheckers sets the health checkers for the provider
+func (n *NodeProvider) SetHealthCheckers(httpChecker, wsChecker *HealthChecker) {
+	n.httpChecker = httpChecker
+	n.wsChecker = wsChecker
+}
+
+// IsHealthy returns true if the provider is healthy for the given connection type
+func (n *NodeProvider) IsHealthy(connType string) bool {
+	if connType == "websocket" {
+		return n.wsChecker != nil && n.wsChecker.IsHealthy()
+	}
+	return n.httpChecker != nil && n.httpChecker.IsHealthy()
 }
 
 func (n *NodeProvider) Name() string {
