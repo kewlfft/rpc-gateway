@@ -90,29 +90,29 @@ func performGasLeftCall(ctx context.Context, client *http.Client, url string) (u
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(gasLeftCallRaw))
 	if err != nil {
-		return 0, fmt.Errorf("performGasLeftCall: new request: %w", err)
+		return 0, fmt.Errorf("gasLeftCall: new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("performGasLeftCall: do request: %w", err)
+		return 0, fmt.Errorf("gasLeftCall: do request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("performGasLeftCall: unexpected status %d", resp.StatusCode)
+		return 0, fmt.Errorf("gasLeftCall: unexpected status %d", resp.StatusCode)
 	}
 
 	var result JSONRPCResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("performGasLeftCall: decode: %w", err)
+		return 0, fmt.Errorf("gasLeftCall: decode: %w", err)
 	}
 	if result.Error != nil {
-		return 0, fmt.Errorf("performGasLeftCall: rpc error: code=%d message=%s", result.Error.Code, result.Error.Message)
+		return 0, fmt.Errorf("gasLeftCall: rpc error: code=%d message=%s", result.Error.Code, result.Error.Message)
 	}
 	if result.Result == "" {
-		return 0, fmt.Errorf("performGasLeftCall: empty result")
+		return 0, fmt.Errorf("gasLeftCall: empty result")
 	}
 
 	// Type assert result to string

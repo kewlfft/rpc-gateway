@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand"
 	"net/http"
 	"time"
 
@@ -55,11 +54,15 @@ type Proxy struct {
 // Ensure Proxy implements ChainTypeHandler
 var _ ChainTypeHandler = (*Proxy)(nil)
 
-// RandomizeProviders randomizes the order of providers in the targets slice
+// RandomizeProviders randomizes the order of providers using a simple time-based shuffle to avoid math/rand
 func (p *Proxy) RandomizeProviders() {
-	rand.Shuffle(len(p.targets), func(i, j int) {
+	n := len(p.targets)
+	seed := uint64(time.Now().UnixNano())
+	for i := n - 1; i > 0; i-- {
+		seed = seed*6364136223846793005 + 1
+		j := int(seed % uint64(i+1))
 		p.targets[i], p.targets[j] = p.targets[j], p.targets[i]
-	})
+	}
 }
 
 // NewProxy creates a new proxy
@@ -146,7 +149,6 @@ func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 }
 
 // isBrokenPipeError checks if the error is a broken pipe error (client disconnected)
-// isBrokenPipeError is defined in healthchecker_utils.go
 
 // getConnectionType determines the connection type based on the request
 func (p *Proxy) getConnectionType(r *http.Request) string {
