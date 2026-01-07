@@ -72,7 +72,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				ChainType:       config.ChainType,
 				ConnectionType:  conn.connType,
 				BlockDiffThreshold: uint(config.HealthChecks.BlockDiffThreshold),
-				APIKey:            target.Connection.HTTP.APIKey,
+				Headers:           target.Connection.HTTP.Headers,
 				InitialDelay:      initialDelay,
 			})
 			if err != nil {

@@ -25,44 +25,44 @@ func TestProviderRandomization(t *testing.T) {
 				Targets: []proxy.NodeProviderConfig{
 					{Name: "provider1", Connection: struct {
 						HTTP struct {
-							URL    string `yaml:"url"`
-							APIKey string `yaml:"apiKey"`
+							URL     string            `yaml:"url"`
+							Headers map[string]string `yaml:"headers"`
 						} `yaml:"http"`
 						WebSocket struct {
 							URL string `yaml:"url"`
 						} `yaml:"websocket"`
 					}{
 						HTTP: struct {
-							URL    string `yaml:"url"`
-							APIKey string `yaml:"apiKey"`
+							URL     string            `yaml:"url"`
+							Headers map[string]string `yaml:"headers"`
 						}{URL: "http://provider1"},
 					}},
 					{Name: "provider2", Connection: struct {
 						HTTP struct {
-							URL    string `yaml:"url"`
-							APIKey string `yaml:"apiKey"`
+							URL     string            `yaml:"url"`
+							Headers map[string]string `yaml:"headers"`
 						} `yaml:"http"`
 						WebSocket struct {
 							URL string `yaml:"url"`
 						} `yaml:"websocket"`
 					}{
 						HTTP: struct {
-							URL    string `yaml:"url"`
-							APIKey string `yaml:"apiKey"`
+							URL     string            `yaml:"url"`
+							Headers map[string]string `yaml:"headers"`
 						}{URL: "http://provider2"},
 					}},
 					{Name: "provider3", Connection: struct {
 						HTTP struct {
-							URL    string `yaml:"url"`
-							APIKey string `yaml:"apiKey"`
+							URL     string            `yaml:"url"`
+							Headers map[string]string `yaml:"headers"`
 						} `yaml:"http"`
 						WebSocket struct {
 							URL string `yaml:"url"`
 						} `yaml:"websocket"`
 					}{
 						HTTP: struct {
-							URL    string `yaml:"url"`
-							APIKey string `yaml:"apiKey"`
+							URL     string            `yaml:"url"`
+							Headers map[string]string `yaml:"headers"`
 						}{URL: "http://provider3"},
 					}},
 				},

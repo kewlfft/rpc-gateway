@@ -62,6 +62,11 @@ func (h *HealthChecker) makeJSONRPCCall(ctx context.Context, method string, para
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 
+	// Add custom headers if configured
+	for key, value := range h.config.Headers {
+		req.Header.Set(key, value)
+	}
+
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
@@ -129,7 +134,7 @@ type HealthCheckerConfig struct {
 	ChainType        string
 	ConnectionType   string
 	BlockDiffThreshold uint
-	APIKey           string
+	Headers          map[string]string
 	InitialDelay     time.Duration // Add initial delay to config
 }
 
@@ -186,7 +191,7 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		"path", config.Path,
 		"chainType", config.ChainType,
 		"connectionType", config.ConnectionType,
-		"hasApiKey", config.APIKey != "")
+		"headers_count", len(config.Headers))
 
 	return healthchecker, nil
 }
@@ -342,9 +347,9 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 			return 0, fmt.Errorf("failed to create request: %w", err)
 		}
 
-		// Add API key header if configured
-		if h.config.APIKey != "" {
-			req.Header.Set("TRON-PRO-API-KEY", h.config.APIKey)
+		// Add custom headers if configured
+		for key, value := range h.config.Headers {
+			req.Header.Set(key, value)
 		}
 
 		// Send the request

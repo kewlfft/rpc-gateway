@@ -241,9 +241,9 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 		req.Header[k] = v
 	}
 
-	// Add API key header if configured
-	if apiKey := target.config.Connection.HTTP.APIKey; apiKey != "" {
-		req.Header.Set("TRON-PRO-API-KEY", apiKey)
+	// Add custom headers if configured
+	for key, value := range target.config.Connection.HTTP.Headers {
+		req.Header.Set(key, value)
 	}
 
 	// Add query parameters to the request

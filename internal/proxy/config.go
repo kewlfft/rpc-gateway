@@ -23,8 +23,8 @@ type NodeProviderConfig struct {
 		HTTP struct {
 			// RPC endpoint URL
 			URL string `yaml:"url"`
-			// Optional API key for the provider
-			APIKey string `yaml:"apiKey"`
+			// Optional custom headers for the provider (e.g., API keys)
+			Headers map[string]string `yaml:"headers"`
 		} `yaml:"http"`
 		// WebSocket connection details
 		WebSocket struct {
