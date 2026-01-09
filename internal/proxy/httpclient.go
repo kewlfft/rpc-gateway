@@ -25,7 +25,7 @@ type HTTPClientSettings struct {
 	ForceAttemptHTTP2 bool
 }
 
-// DefaultHTTPClientConfig returns optimized default configuration
+// DefaultHTTPClientConfig returns optimized default configuration for both user requests and health checks
 func DefaultHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 	return HTTPClientSettings{
 		Timeout:              timeout,
@@ -38,17 +38,9 @@ func DefaultHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 	}
 }
 
-// HealthCheckHTTPClientConfig returns optimized configuration for health checks
+// HealthCheckHTTPClientConfig is now a wrapper around DefaultHTTPClientConfig to unify pools
 func HealthCheckHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
-	return HTTPClientSettings{
-		Timeout:              timeout,
-		MaxIdleConns:         100,  // Shared across all providers in a proxy path
-		MaxIdleConnsPerHost:  15,   // Shared per host across all providers in a proxy path
-		IdleConnTimeout:      70 * time.Second, // At least as long as the longest health check interval
-		ResponseHeaderTimeout: timeout,
-		DisableCompression:   true,
-		ForceAttemptHTTP2:    true,
-	}
+	return DefaultHTTPClientConfig(timeout)
 }
 
 // HTTPClientManager manages shared HTTP clients with connection pooling
@@ -164,16 +156,15 @@ func (f *HTTPClientFactory) Close() {
 func (f *HTTPClientFactory) CreateOptimizedHTTPClient(proxyPath string, timeout time.Duration) *http.Client {
 	manager := f.GetManagerForProxy(proxyPath)
 	config := DefaultHTTPClientConfig(timeout)
-	key := "main-" + proxyPath
+	// Use a unified key to share the connection pool between health checks and user requests
+	key := "unified-" + proxyPath
 	return manager.GetOrCreateClient(key, config)
 }
 
 // CreateHealthCheckHTTPClient creates an optimized HTTP client for health checks
 func (f *HTTPClientFactory) CreateHealthCheckHTTPClient(proxyPath string, timeout time.Duration) *http.Client {
-	manager := f.GetManagerForProxy(proxyPath)
-	config := HealthCheckHTTPClientConfig(timeout)
-	key := "health-" + proxyPath
-	return manager.GetOrCreateClient(key, config)
+	// Re-use CreateOptimizedHTTPClient to share the connection pool
+	return f.CreateOptimizedHTTPClient(proxyPath, timeout)
 }
 
 // Global factory instance (can be replaced for testing)
@@ -197,9 +188,6 @@ func CreateOptimizedHTTPClient(key string, timeout time.Duration) *http.Client {
 
 // CreateHealthCheckHTTPClientForProxy creates a shared health check client for all providers in a proxy path
 func CreateHealthCheckHTTPClientForProxy(proxyPath string, providerName string, timeout time.Duration) *http.Client {
-	manager := globalFactory.GetManagerForProxy(proxyPath)
-	config := HealthCheckHTTPClientConfig(timeout)
-	// Share one client per proxy path - all providers in the same path share the connection pool
-	key := "health-" + proxyPath
-	return manager.GetOrCreateClient(key, config)
+	// Use CreateOptimizedHTTPClient to ensure unified connection pool with user requests
+	return globalFactory.CreateOptimizedHTTPClient(proxyPath, timeout)
 }
