@@ -29,8 +29,8 @@ type HTTPClientSettings struct {
 func DefaultHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 	return HTTPClientSettings{
 		Timeout:              timeout,
-		MaxIdleConns:         1024,
-		MaxIdleConnsPerHost:  256,
+		MaxIdleConns:         512,
+		MaxIdleConnsPerHost:  64,
 		IdleConnTimeout:      90 * time.Second,
 		ResponseHeaderTimeout: timeout,
 		DisableCompression:   true, // Prevent auto-decompression so we can forward gzip as-is
