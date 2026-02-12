@@ -218,9 +218,9 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		server: &http.Server{
 			Addr:              ":" + config.Port,
 			Handler:           r,
-			WriteTimeout:      time.Second * 15,
-			ReadTimeout:       time.Second * 15,
-			ReadHeaderTimeout: time.Second * 5,
+			WriteTimeout:      90 * time.Second,
+			ReadTimeout:       90 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
 		},
 	}, nil
 }
