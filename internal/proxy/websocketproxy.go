@@ -13,13 +13,13 @@ import (
 )
 
 const (
-	bufferSize      = 16384
-	pingInterval     = 15 * time.Second
+	bufferSize   = 16384
+	pingInterval = 15 * time.Second
 )
 
 // upstreamCloseInfo contains error and whether it's a graceful close from upstream
 type upstreamCloseInfo struct {
-	err           error
+	err             error
 	isGracefulClose bool
 }
 
@@ -44,11 +44,11 @@ type WebSocketProxy struct {
 
 func NewWebSocketProxy(targetURL string, timeout time.Duration, logger *slog.Logger) *WebSocketProxy {
 	return &WebSocketProxy{
-		targetURL: targetURL,
-		logger:    logger,
-		timeout:   timeout,
+		targetURL:     targetURL,
+		logger:        logger,
+		timeout:       timeout,
 		subscriptions: make(map[string]bool),
-		connPool: make(chan *websocket.Conn, 5), // Pool of 5 connections
+		connPool:      make(chan *websocket.Conn, 5), // Pool of 5 connections
 	}
 }
 
@@ -72,8 +72,8 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Track subscriptions for this specific connection
 	connectionSubscriptions := make(map[string]bool)
 	// Track pending subscription request IDs to identify subscription responses
-	pendingSubscriptionRequests := make(map[interface{}]bool)
-	
+	pendingSubscriptionRequests := make(map[any]bool)
+
 	// Buffer of 3 to handle errors from 2 pipes + ping goroutine without blocking
 	errCh := make(chan upstreamCloseInfo, 3)
 	var once sync.Once
@@ -106,7 +106,7 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				errCh <- upstreamCloseInfo{err: err, isGracefulClose: isGracefulClose}
 				return
 			}
-			
+
 			// Get writer first to start forwarding immediately
 			writer, err := dst.NextWriter(mt)
 			if err != nil {
@@ -116,11 +116,11 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
 				return
 			}
-			
+
 			// Buffer for parsing while forwarding
 			var buf bytes.Buffer
 			teeReader := io.TeeReader(reader, &buf)
-			
+
 			// Forward immediately while also buffering
 			if _, err = io.Copy(writer, teeReader); err != nil {
 				writer.Close()
@@ -137,14 +137,14 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
 				return
 			}
-			
+
 			// Parse from buffer (non-blocking for next message)
 			msgBytes := buf.Bytes()
 			if direction == "client->target" {
 				p.trackSubscriptionFromMessage(msgBytes, connectionSubscriptions, pendingSubscriptionRequests)
 			} else if direction == "target->client" {
 				// Parse once and reuse for both tracking and error logging
-				var msg map[string]interface{}
+				var msg map[string]any
 				if err := json.Unmarshal(msgBytes, &msg); err == nil {
 					p.trackSubscriptionResponse(msg, connectionSubscriptions, pendingSubscriptionRequests)
 					p.logJSONRPCError(msg)
@@ -220,7 +220,7 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 	}
 
 	p.logger.Info("unsubscribing from all subscriptions", "count", len(subIDs))
-	
+
 	// Get connection from pool or create new one
 	conn := p.getConnection()
 	if conn == nil {
@@ -239,13 +239,13 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 
 	// Send unsubscribe messages for each subscription
 	for _, subID := range subIDs {
-		unsubMsg := map[string]interface{}{
+		unsubMsg := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
 			"method":  "eth_unsubscribe",
 			"params":  []string{subID},
 		}
-		
+
 		if err := conn.WriteJSON(unsubMsg); err != nil {
 			p.logger.Error("failed to send unsubscribe message", "subID", subID, "error", err)
 		} else {
@@ -254,9 +254,9 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[interface{}]bool) {
+func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[any]bool) {
 	// Parse JSON-RPC message
-	var msg map[string]interface{}
+	var msg map[string]any
 	if err := json.Unmarshal(msgBytes, &msg); err != nil {
 		return // Not a valid JSON message
 	}
@@ -277,7 +277,7 @@ func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectio
 
 	// Check if this is an unsubscribe request
 	if method == "eth_unsubscribe" || method == "shh_unsubscribe" || method == "net_unsubscribe" {
-		if params, ok := msg["params"].([]interface{}); ok && len(params) > 0 {
+		if params, ok := msg["params"].([]any); ok && len(params) > 0 {
 			if subID, ok := params[0].(string); ok {
 				// Remove from both connection-specific and global maps
 				delete(connectionSubscriptions, subID)
@@ -287,7 +287,7 @@ func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectio
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionResponse(msg map[string]interface{}, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[interface{}]bool) {
+func (p *WebSocketProxy) trackSubscriptionResponse(msg map[string]any, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[any]bool) {
 	// Only track subscription IDs if this response corresponds to a pending subscription request
 	requestID, hasID := msg["id"]
 	if !hasID || !pendingSubscriptionRequests[requestID] {
@@ -309,12 +309,12 @@ func (p *WebSocketProxy) trackSubscriptionResponse(msg map[string]interface{}, c
 }
 
 // logJSONRPCError logs JSON-RPC error responses from upstream providers
-func (p *WebSocketProxy) logJSONRPCError(msg map[string]interface{}) {
+func (p *WebSocketProxy) logJSONRPCError(msg map[string]any) {
 	// Check if this is a JSON-RPC error response
-	if errObj, ok := msg["error"].(map[string]interface{}); ok {
+	if errObj, ok := msg["error"].(map[string]any); ok {
 		code, _ := errObj["code"].(float64)
 		message, _ := errObj["message"].(string)
-		
+
 		p.logger.Debug("JSON-RPC error from upstream provider",
 			"target_url", p.targetURL,
 			"error_code", int(code),
@@ -327,16 +327,16 @@ func (p *WebSocketProxy) cleanupConnectionSubscriptions(connectionSubscriptions 
 	if len(connectionSubscriptions) == 0 {
 		return
 	}
-	
+
 	p.logger.Debug("cleaning up connection subscriptions", "count", len(connectionSubscriptions))
-	
+
 	// Remove from global map
 	p.mu.Lock()
 	for subID := range connectionSubscriptions {
 		delete(p.subscriptions, subID)
 	}
 	p.mu.Unlock()
-	
+
 	// Clear connection-specific map
 	for subID := range connectionSubscriptions {
 		delete(connectionSubscriptions, subID)
@@ -366,7 +366,7 @@ func (p *WebSocketProxy) returnConnection(conn *websocket.Conn) {
 	if conn == nil {
 		return
 	}
-	
+
 	select {
 	case p.connPool <- conn:
 		// Connection returned to pool
@@ -390,6 +390,6 @@ func (p *WebSocketProxy) createNewConnection() *websocket.Conn {
 		p.logger.Error("failed to create new connection", "error", err)
 		return nil
 	}
-	
+
 	return conn
-} 
+}

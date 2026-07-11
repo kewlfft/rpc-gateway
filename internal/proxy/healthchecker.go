@@ -1,16 +1,16 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
-	"log/slog"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"sync"
-	"time"
-	"encoding/json"
 	"sync/atomic"
-	"bytes"
-	"io"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -23,7 +23,7 @@ var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 // JSON-RPC response structure
 type JSONRPCResponse struct {
-	Result interface{} `json:"result"`
+	Result any `json:"result"`
 	Error  *struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
@@ -51,9 +51,7 @@ func (h *HealthChecker) makeJSONRPCCall(ctx context.Context, method string, para
 		return nil, fmt.Errorf("failed to encode request: %w", err)
 	}
 
-	// Create a copy of buffer data to avoid race conditions
-	bodyData := make([]byte, buf.Len())
-	copy(bodyData, buf.Bytes())
+	bodyData := bytes.Clone(buf.Bytes())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.URL, bytes.NewReader(bodyData))
 	if err != nil {
@@ -92,9 +90,9 @@ func (h *HealthChecker) makeJSONRPCCall(ctx context.Context, method string, para
 
 // TaintConfig defines the taint behavior parameters
 type TaintConfig struct {
-	InitialWaitTime    time.Duration
-	MaxWaitTime        time.Duration
-	ResetWaitDuration  time.Duration
+	InitialWaitTime   time.Duration
+	MaxWaitTime       time.Duration
+	ResetWaitDuration time.Duration
 	Reason            string
 }
 
@@ -104,7 +102,7 @@ var (
 		InitialWaitTime:   time.Second * 30,
 		MaxWaitTime:       time.Minute * 20,
 		ResetWaitDuration: time.Minute * 5,
-		Reason:           "health check failure",
+		Reason:            "health check failure",
 	}
 
 	// HTTP request taint configuration (faster cycle)
@@ -112,7 +110,7 @@ var (
 		InitialWaitTime:   time.Second * 10,
 		MaxWaitTime:       time.Second * 60,
 		ResetWaitDuration: time.Second * 20,
-		Reason:           "HTTP error",
+		Reason:            "HTTP error",
 	}
 )
 
@@ -125,37 +123,37 @@ type TaintState struct {
 }
 
 type HealthCheckerConfig struct {
-	Logger           *slog.Logger
-	URL              string
-	Name             string
-	Interval         time.Duration
-	Timeout          time.Duration
-	Path             string
-	ChainType        string
-	ConnectionType   string
+	Logger             *slog.Logger
+	URL                string
+	Name               string
+	Interval           time.Duration
+	Timeout            time.Duration
+	Path               string
+	ChainType          string
+	ConnectionType     string
 	BlockDiffThreshold uint
-	Headers          map[string]string
-	InitialDelay     time.Duration // Add initial delay to config
+	Headers            map[string]string
+	InitialDelay       time.Duration // Add initial delay to config
 }
 
 // BlockNumberUpdateCallback is called when a health checker successfully updates its block number
 type BlockNumberUpdateCallback func(blockNumber uint64)
 
 type HealthChecker struct {
-	config              HealthCheckerConfig
-	httpClient          *http.Client
-	blockNumber        atomic.Uint64
-	gasCheckCounter    atomic.Uint32
-	mu                 sync.RWMutex // Only for taint state
-	taintRemoveCh      chan struct{}
-	isTainted         atomic.Bool
+	config          HealthCheckerConfig
+	httpClient      *http.Client
+	blockNumber     atomic.Uint64
+	gasCheckCounter atomic.Uint32
+	mu              sync.RWMutex // Only for taint state
+	taintRemoveCh   chan struct{}
+	isTainted       atomic.Bool
 
 	// Taint state
 	taint TaintState
 
 	// callback function to be called when block number is updated
 	onBlockNumberUpdate atomic.Value
-	
+
 	// callback function to be called before tainting (for cleanup)
 	onBeforeTaint atomic.Value
 }
@@ -176,8 +174,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 	httpClient := CreateHealthCheckHTTPClientForProxy(config.Path, config.Name, config.Timeout)
 
 	healthchecker := &HealthChecker{
-		config:     config,
-		httpClient: httpClient,
+		config:        config,
+		httpClient:    httpClient,
 		taintRemoveCh: make(chan struct{}, 1),
 		taint: TaintState{
 			config:   healthCheckTaintConfig,
@@ -185,8 +183,8 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 		},
 	}
 
-	healthchecker.config.Logger.Debug("Health checker created", 
-		"provider", config.Name, 
+	healthchecker.config.Logger.Debug("Health checker created",
+		"provider", config.Name,
 		"url", config.URL,
 		"path", config.Path,
 		"chainType", config.ChainType,
@@ -208,13 +206,13 @@ func (h *HealthChecker) checkSolanaSlotViaWebSocket(conn *websocket.Conn) (uint6
 		return 0, fmt.Errorf("slotSubscribe failed: %w", err)
 	}
 
-	var subResp struct{ Result interface{} }
+	var subResp struct{ Result any }
 	if err := conn.ReadJSON(&subResp); err != nil {
 		return 0, fmt.Errorf("subscription response failed: %w", err)
 	}
 	subID := subResp.Result
 
-	var msg map[string]interface{}
+	var msg map[string]any
 	if err := conn.ReadJSON(&msg); err != nil {
 		if websocket.IsUnexpectedCloseError(err) {
 			return 0, fmt.Errorf("websocket closed unexpectedly: %w", err)
@@ -230,8 +228,8 @@ func (h *HealthChecker) checkSolanaSlotViaWebSocket(conn *websocket.Conn) (uint6
 		return 0, fmt.Errorf("unexpected notification method: %s", method)
 	}
 
-	params, _ := msg["params"].(map[string]interface{})
-	result, _ := params["result"].(map[string]interface{})
+	params, _ := msg["params"].(map[string]any)
+	result, _ := params["result"].(map[string]any)
 	slot, ok := result["slot"].(float64)
 	if !ok {
 		return 0, fmt.Errorf("invalid slot format")
@@ -275,12 +273,12 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 	case h.config.ConnectionType == "websocket":
 		// Create a custom dialer with timeout from config
 		dialer := websocket.Dialer{
-			HandshakeTimeout: h.config.Timeout,
-			ReadBufferSize:   16384,
-			WriteBufferSize:  16384,
+			HandshakeTimeout:  h.config.Timeout,
+			ReadBufferSize:    16384,
+			WriteBufferSize:   16384,
 			EnableCompression: true,
 		}
-		
+
 		conn, resp, err := dialer.DialContext(ctx, h.config.URL, nil)
 		if err != nil {
 			// Log health check failure concisely - these are expected during provider outages
@@ -288,7 +286,7 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 			if resp != nil {
 				statusCode = resp.StatusCode
 			}
-			h.config.Logger.Info("WebSocket health check failed", 
+			h.config.Logger.Info("WebSocket health check failed",
 				"error", err,
 				"provider", h.config.Name,
 				"path", h.config.Path,
@@ -323,7 +321,7 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		if err != nil {
 			return 0, err
 		}
-		
+
 		// Parse result to uint64
 		result, ok := rpcResp.Result.(float64)
 		if !ok {
@@ -377,13 +375,13 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		if err != nil {
 			return 0, err
 		}
-		
+
 		// Parse hex result to uint64
 		result, ok := rpcResp.Result.(string)
 		if !ok {
 			return 0, fmt.Errorf("invalid result type for eth_blockNumber")
 		}
-		
+
 		blockNumber, err = parseHex(result)
 		if err != nil {
 			return 0, fmt.Errorf("failed to parse block number: %w", err)
@@ -412,17 +410,17 @@ func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
 
 	gasLeft, err := performGasLeftCall(c, h.httpClient, h.config.URL)
 	if err != nil {
-		h.config.Logger.Error("gas call failed", 
+		h.config.Logger.Error("gas call failed",
 			"connectionType", h.config.ConnectionType,
 			"error", err,
 			"provider", h.config.Name,
 			"path", h.config.Path)
 		return gasLeft, err
 	}
-	h.config.Logger.Debug("gas left fetched", 
+	h.config.Logger.Debug("gas left fetched",
 		"connectionType", h.config.ConnectionType,
-		"provider", h.config.Name, 
-		"gasLeft", gasLeft, 
+		"provider", h.config.Name,
+		"gasLeft", gasLeft,
 		"path", h.config.Path)
 	return gasLeft, nil
 }
@@ -473,7 +471,7 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 	}
 
 	h.blockNumber.Store(blockNumber)
-	
+
 	if callback, ok := h.onBlockNumberUpdate.Load().(BlockNumberUpdateCallback); ok && callback != nil {
 		callback(blockNumber)
 	}
@@ -514,7 +512,7 @@ func (h *HealthChecker) Start(c context.Context) {
 		"connectionType", h.config.ConnectionType,
 		"provider", h.config.Name,
 		"path", h.config.Path)
-	
+
 	// Start the health checker in a separate goroutine to avoid blocking
 	go h.runHealthChecker(c)
 }
@@ -527,7 +525,7 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 	for {
 		select {
 		case <-c.Done():
-			h.config.Logger.Info("health checker shutting down gracefully", 
+			h.config.Logger.Info("health checker shutting down gracefully",
 				"provider", h.config.Name,
 				"path", h.config.Path)
 			return
@@ -581,19 +579,16 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 
 	// Update taint state under lock
 	h.mu.Lock()
-	
+
 	// Calculate timing values
 	now := time.Now()
 	var wait time.Duration
 	if time.Since(h.taint.lastRemoval) <= cfg.ResetWaitDuration {
-		wait = h.taint.waitTime * 2
-		if wait > cfg.MaxWaitTime {
-			wait = cfg.MaxWaitTime
-		}
+		wait = min(h.taint.waitTime*2, cfg.MaxWaitTime)
 	} else {
 		wait = cfg.InitialWaitTime
 	}
-	
+
 	// Cancel old timer safely
 	if oldTimer := h.taint.removalTimer; oldTimer != nil {
 		if !oldTimer.Stop() {
@@ -642,16 +637,16 @@ func (h *HealthChecker) TaintHealthCheck() {
 func (h *HealthChecker) RemoveTaint() {
 	// Update atomic state
 	h.isTainted.Store(false)
-	
+
 	// Update taint state under lock
 	h.mu.Lock()
 	h.taint.lastRemoval = time.Now()
 	h.taint.removalTimer = nil
 	nextWait := h.taint.waitTime
 	h.mu.Unlock()
-	
+
 	// Log after all state updates are complete, using the captured wait time
-	h.config.Logger.Info("taint removed", 
+	h.config.Logger.Info("taint removed",
 		"connectionType", h.config.ConnectionType,
 		"path", h.config.Path,
 		"name", h.config.Name,

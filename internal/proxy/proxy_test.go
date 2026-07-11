@@ -26,7 +26,7 @@ func createConfig() Config {
 	return Config{
 		Timeout: time.Second * 3,
 		HealthChecks: HealthCheckConfig{
-			Interval:         time.Second * 5,
+			Interval:           time.Second * 5,
 			BlockDiffThreshold: 2,
 		},
 		Targets: []NodeProviderConfig{},
@@ -38,7 +38,7 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		var req map[string]interface{}
+		var req map[string]any
 		_ = json.Unmarshal(body, &req)
 
 		// Handle health check requests
@@ -63,7 +63,7 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 
 	fakeRPC2Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		var req map[string]interface{}
+		var req map[string]any
 		_ = json.Unmarshal(body, &req)
 
 		// Handle health check requests
@@ -100,7 +100,9 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 			}{HTTP: struct {
 				URL     string            `yaml:"url"`
 				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPC1Server.URL, Headers: nil}, WebSocket: struct{URL string `yaml:"url"`}{URL: ""}},
+			}{URL: fakeRPC1Server.URL, Headers: nil}, WebSocket: struct {
+				URL string `yaml:"url"`
+			}{URL: ""}},
 		},
 		{
 			Name: "Server2",
@@ -115,7 +117,9 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 			}{HTTP: struct {
 				URL     string            `yaml:"url"`
 				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPC2Server.URL, Headers: nil}, WebSocket: struct{URL string `yaml:"url"`}{URL: ""}},
+			}{URL: fakeRPC2Server.URL, Headers: nil}, WebSocket: struct {
+				URL string `yaml:"url"`
+			}{URL: ""}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -149,7 +153,7 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 	var receivedHeaderContentEncoding, receivedHeaderContentLength string
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		var req map[string]interface{}
+		var req map[string]any
 		_ = json.Unmarshal(body, &req)
 
 		// Handle health check requests
@@ -195,11 +199,13 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 			}{HTTP: struct {
 				URL     string            `yaml:"url"`
 				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPC1Server.URL, Headers: nil}, WebSocket: struct{URL string `yaml:"url"`}{URL: ""}},
+			}{URL: fakeRPC1Server.URL, Headers: nil}, WebSocket: struct {
+				URL string `yaml:"url"`
+			}{URL: ""}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
-  // Disable health checks for this test
+	// Disable health checks for this test
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
@@ -257,7 +263,7 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 		contentEncoding := r.Header.Get("Content-Encoding")
 		if contentEncoding != "gzip" {
 			// Likely a health check request - try to parse as JSON
-			var req map[string]interface{}
+			var req map[string]any
 			if err := json.Unmarshal(body, &req); err == nil {
 				if method, ok := req["method"].(string); ok {
 					switch method {
@@ -341,15 +347,17 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{
-						URL: server.URL,
+						URL:     server.URL,
 						Headers: nil,
 					},
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 		},
-		Timeout:         5 * time.Second,
-		Logger:         slog.Default(),
+		Timeout: 5 * time.Second,
+		Logger:  slog.Default(),
 	}
 
 	// Create proxy
@@ -414,7 +422,7 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 	var receivedBody []byte
 	fakeRPCServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		var req map[string]interface{}
+		var req map[string]any
 		_ = json.Unmarshal(body, &req)
 
 		// Handle health check requests
@@ -460,7 +468,7 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 	}
 
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
-  // Disable health checks for this test
+	// Disable health checks for this test
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
@@ -493,7 +501,7 @@ func TestTronProxyURLRedirection(t *testing.T) {
 		receivedPath = r.URL.Path
 		receivedHeaders = r.Header
 		body, _ := io.ReadAll(r.Body)
-		var req map[string]interface{}
+		var req map[string]any
 		_ = json.Unmarshal(body, &req)
 		if method, ok := req["method"].(string); ok {
 			receivedMethod = method
@@ -521,7 +529,9 @@ func TestTronProxyURLRedirection(t *testing.T) {
 			}{HTTP: struct {
 				URL     string            `yaml:"url"`
 				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPCServer.URL, Headers: map[string]string{"TRON-PRO-API-KEY": "test-api-key"}}, WebSocket: struct{URL string `yaml:"url"`}{URL: ""}},
+			}{URL: fakeRPCServer.URL, Headers: map[string]string{"TRON-PRO-API-KEY": "test-api-key"}}, WebSocket: struct {
+				URL string `yaml:"url"`
+			}{URL: ""}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -589,7 +599,9 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{URL: "", Headers: nil}, // Empty URL means no health checker
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 			{
@@ -607,7 +619,9 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{URL: "", Headers: nil}, // Empty URL means no health checker
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 		}
@@ -625,11 +639,11 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		proxy.ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
-		
-		var response map[string]interface{}
+
+		var response map[string]any
 		err = json.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
-		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]interface{})["message"])
+		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
 	})
 
 	t.Run("all providers are tainted", func(t *testing.T) {
@@ -657,7 +671,9 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{URL: failingServer.URL, Headers: nil},
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 			{
@@ -675,7 +691,9 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{URL: failingServer.URL, Headers: nil},
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 		}
@@ -710,18 +728,18 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		proxy.ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
-		
-		var response map[string]interface{}
+
+		var response map[string]any
 		err = json.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
-		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]interface{})["message"])
+		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
 	})
 
 	t.Run("all providers fail during request forwarding", func(t *testing.T) {
 		// Create servers that accept health checks but fail actual requests
 		server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			var req map[string]interface{}
+			var req map[string]any
 			json.Unmarshal(body, &req)
 
 			// Handle health check requests successfully
@@ -745,7 +763,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 
 		server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			var req map[string]interface{}
+			var req map[string]any
 			json.Unmarshal(body, &req)
 
 			// Handle health check requests successfully
@@ -784,7 +802,9 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{URL: server1.URL, Headers: nil},
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 			{
@@ -802,7 +822,9 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{URL: server2.URL, Headers: nil},
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 		}
@@ -838,12 +860,12 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 
 		// Should get 503 because all providers fail during forwarding
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code, "Expected 503 when all providers fail")
-		
-		var response map[string]interface{}
+
+		var response map[string]any
 		err = json.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
 		require.NotNil(t, response["error"], "Response should have error field")
-		assert.Contains(t, response["error"].(map[string]interface{})["message"].(string), "All providers failed")
+		assert.Contains(t, response["error"].(map[string]any)["message"].(string), "All providers failed")
 	})
 
 	t.Run("mix of no checkers and tainted providers", func(t *testing.T) {
@@ -869,7 +891,9 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{URL: "", Headers: nil}, // No health checker
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 			{
@@ -887,7 +911,9 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 						URL     string            `yaml:"url"`
 						Headers map[string]string `yaml:"headers"`
 					}{URL: failingServer.URL, Headers: nil}, // Will be tainted
-					WebSocket: struct{URL string `yaml:"url"`}{URL: ""},
+					WebSocket: struct {
+						URL string `yaml:"url"`
+					}{URL: ""},
 				},
 			},
 		}
@@ -923,10 +949,10 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		proxy.ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
-		
-		var response map[string]interface{}
+
+		var response map[string]any
 		err = json.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
-		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]interface{})["message"])
+		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
 	})
 }

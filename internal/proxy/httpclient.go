@@ -28,13 +28,13 @@ type HTTPClientSettings struct {
 // DefaultHTTPClientConfig returns optimized default configuration for both user requests and health checks
 func DefaultHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 	return HTTPClientSettings{
-		Timeout:              timeout,
-		MaxIdleConns:         512,
-		MaxIdleConnsPerHost:  64,
-		IdleConnTimeout:      90 * time.Second,
+		Timeout:               timeout,
+		MaxIdleConns:          512,
+		MaxIdleConnsPerHost:   64,
+		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: timeout,
-		DisableCompression:   true, // Prevent auto-decompression so we can forward gzip as-is
-		ForceAttemptHTTP2:    true, // Enable HTTP/2 for better multiplexing
+		DisableCompression:    true, // Prevent auto-decompression so we can forward gzip as-is
+		ForceAttemptHTTP2:     true, // Enable HTTP/2 for better multiplexing
 	}
 }
 
@@ -45,9 +45,9 @@ func HealthCheckHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 
 // HTTPClientManager manages shared HTTP clients with connection pooling
 type HTTPClientManager struct {
-	mu       sync.RWMutex
-	clients  map[string]*http.Client
-	configs  map[string]HTTPClientSettings
+	mu         sync.RWMutex
+	clients    map[string]*http.Client
+	configs    map[string]HTTPClientSettings
 	transports map[string]*http.Transport
 }
 
@@ -107,7 +107,7 @@ func (m *HTTPClientManager) Close() {
 	for _, transport := range m.transports {
 		transport.CloseIdleConnections()
 	}
-	
+
 	// Clear all maps
 	m.clients = make(map[string]*http.Client)
 	m.configs = make(map[string]HTTPClientSettings)
@@ -131,11 +131,11 @@ func NewHTTPClientFactory() *HTTPClientFactory {
 func (f *HTTPClientFactory) GetManagerForProxy(proxyPath string) *HTTPClientManager {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	
+
 	if manager, exists := f.managers[proxyPath]; exists {
 		return manager
 	}
-	
+
 	manager := NewHTTPClientManager()
 	f.managers[proxyPath] = manager
 	return manager
@@ -145,7 +145,7 @@ func (f *HTTPClientFactory) GetManagerForProxy(proxyPath string) *HTTPClientMana
 func (f *HTTPClientFactory) Close() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	
+
 	for _, manager := range f.managers {
 		manager.Close()
 	}
@@ -179,12 +179,11 @@ func GetGlobalFactory() *HTTPClientFactory {
 func CreateOptimizedHTTPClient(key string, timeout time.Duration) *http.Client {
 	// Extract proxy path from key (e.g., "proxy-eth" -> "eth")
 	proxyPath := key
-	if strings.HasPrefix(key, "proxy-") {
-		proxyPath = strings.TrimPrefix(key, "proxy-")
+	if after, ok := strings.CutPrefix(key, "proxy-"); ok {
+		proxyPath = after
 	}
 	return globalFactory.CreateOptimizedHTTPClient(proxyPath, timeout)
 }
-
 
 // CreateHealthCheckHTTPClientForProxy creates a shared health check client for all providers in a proxy path
 func CreateHealthCheckHTTPClientForProxy(proxyPath string, providerName string, timeout time.Duration) *http.Client {

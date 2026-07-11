@@ -17,6 +17,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	serverWriteTimeout      = 90 * time.Second
+	serverReadTimeout       = 90 * time.Second
+	serverReadHeaderTimeout = 10 * time.Second
+	serverIdleTimeout       = 90 * time.Second
+)
+
 type RPCGateway struct {
 	config  RPCGatewayConfig
 	proxies map[string]proxy.ChainTypeHandler
@@ -218,9 +225,10 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		server: &http.Server{
 			Addr:              ":" + config.Port,
 			Handler:           r,
-			WriteTimeout:      90 * time.Second,
-			ReadTimeout:       90 * time.Second,
-			ReadHeaderTimeout: 10 * time.Second,
+			WriteTimeout:      serverWriteTimeout,
+			ReadTimeout:       serverReadTimeout,
+			ReadHeaderTimeout: serverReadHeaderTimeout,
+			IdleTimeout:       serverIdleTimeout,
 		},
 	}, nil
 }

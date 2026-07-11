@@ -31,11 +31,11 @@ func TestBasicHealthchecker(t *testing.T) {
 	defer server.Close()
 
 	healthcheckConfig := HealthCheckerConfig{
-		URL:              server.URL,
-		Name:             "test",
-		Interval:         time.Millisecond * 100, // Much shorter interval for testing
-		Timeout:          time.Second,
-		Logger:           slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		URL:      server.URL,
+		Name:     "test",
+		Interval: time.Millisecond * 100, // Much shorter interval for testing
+		Timeout:  time.Second,
+		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 
 	healthchecker, err := NewHealthChecker(healthcheckConfig)
@@ -81,12 +81,12 @@ func TestHealthCheckerTaint(t *testing.T) {
 
 	// Create a health checker with short intervals for testing
 	config := HealthCheckerConfig{
-		URL:    server.URL,
-		Name:   "test",
-		Path:   "test",
+		URL:      server.URL,
+		Name:     "test",
+		Path:     "test",
 		Interval: time.Millisecond * 100,
-		Timeout: time.Millisecond * 50,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Timeout:  time.Millisecond * 50,
+		Logger:   slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 
 	checker, err := NewHealthChecker(config)
@@ -109,7 +109,7 @@ func TestHealthCheckerTaint(t *testing.T) {
 		InitialWaitTime:   waitTime,
 		MaxWaitTime:       time.Second,
 		ResetWaitDuration: time.Second,
-		Reason:           "test taint",
+		Reason:            "test taint",
 	})
 
 	// Verify it's tainted
@@ -129,7 +129,7 @@ func TestHealthCheckerTaint(t *testing.T) {
 		InitialWaitTime:   waitTime,
 		MaxWaitTime:       time.Second,
 		ResetWaitDuration: time.Millisecond * 50, // Short reset duration to ensure we're within it
-		Reason:           "test taint",
+		Reason:            "test taint",
 	})
 
 	// Verify it's tainted again
@@ -149,7 +149,7 @@ func TestHealthCheckerTaint(t *testing.T) {
 		InitialWaitTime:   waitTime,
 		MaxWaitTime:       time.Millisecond * 300,
 		ResetWaitDuration: time.Millisecond * 50,
-		Reason:           "test taint",
+		Reason:            "test taint",
 	})
 
 	// Verify it's tainted again
@@ -167,12 +167,12 @@ func TestHealthCheckerTaint(t *testing.T) {
 func TestHealthCheckerTaintRemoval(t *testing.T) {
 	// Create a health checker with short intervals for testing
 	config := HealthCheckerConfig{
-		URL:    "http://localhost:8545", // Doesn't matter for this test
-		Name:   "test",
-		Path:   "test",
+		URL:      "http://localhost:8545", // Doesn't matter for this test
+		Name:     "test",
+		Path:     "test",
 		Interval: time.Millisecond * 100,
-		Timeout: time.Millisecond * 50,
-		Logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Timeout:  time.Millisecond * 50,
+		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 
 	checker, err := NewHealthChecker(config)
@@ -189,7 +189,7 @@ func TestHealthCheckerTaintRemoval(t *testing.T) {
 		InitialWaitTime:   waitTime,
 		MaxWaitTime:       time.Second,
 		ResetWaitDuration: time.Second,
-		Reason:           "test taint",
+		Reason:            "test taint",
 	})
 
 	// Verify it's tainted
@@ -237,7 +237,7 @@ func TestHealthCheckerTaintHTTP(t *testing.T) {
 	assert.Greater(t, secondWaitTime, firstWaitTime)
 
 	// Test max wait time
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		healthchecker.TaintHTTP()
 		healthchecker.RemoveTaint()
 	}
@@ -248,7 +248,8 @@ func TestHealthCheckerTaintHTTP(t *testing.T) {
 
 // TestHealthCheckerConcurrentTaint verifies that tainting operations are safe under concurrency.
 // This test is most valuable when run with the race detector:
-//   go test -race ./internal/proxy -run TestHealthCheckerConcurrentTaint
+//
+//	go test -race ./internal/proxy -run TestHealthCheckerConcurrentTaint
 func TestHealthCheckerConcurrentTaint(t *testing.T) {
 	healthchecker, err := NewHealthChecker(HealthCheckerConfig{
 		URL:      "http://localhost:8545",
@@ -260,8 +261,7 @@ func TestHealthCheckerConcurrentTaint(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go healthchecker.Start(ctx)
 
 	var wg sync.WaitGroup
@@ -269,10 +269,10 @@ func TestHealthCheckerConcurrentTaint(t *testing.T) {
 	const iterations = 100
 
 	wg.Add(workers)
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				// Interleave tainting and checks to exercise concurrent access paths.
 				healthchecker.TaintHTTP()
 				_ = healthchecker.IsTainted()

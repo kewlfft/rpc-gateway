@@ -12,14 +12,14 @@ import (
 
 func TestProviderRandomization(t *testing.T) {
 	config := RPCGatewayConfig{
-		Port: "3000",
+		Port:    "3000",
 		Metrics: metrics.Config{Port: 9010},
 		Proxies: []ProxyConfig{
 			{
-				Path: "test",
+				Path:    "test",
 				Timeout: "1s",
 				HealthChecks: proxy.HealthCheckConfig{
-					Interval: time.Second,
+					Interval:           time.Second,
 					BlockDiffThreshold: 2,
 				},
 				Targets: []proxy.NodeProviderConfig{
@@ -75,7 +75,7 @@ func TestProviderRandomization(t *testing.T) {
 	initialOrder := getProviderOrder(gateway, "test")
 
 	changed := false
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		gateway.SetRandomizeProviders(true)
 		newOrder := getProviderOrder(gateway, "test")
 		if !equalStringSlices(initialOrder, newOrder) {
@@ -106,4 +106,4 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
-} 
+}

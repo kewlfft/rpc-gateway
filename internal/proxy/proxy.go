@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/kewlfft/rpc-gateway/internal/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/gorilla/websocket"
 )
 
 var (
@@ -104,7 +105,7 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 			wsProxies[target.Name()] = wsProxy
 		}
 	}
-	
+
 	if len(wsProxies) > 0 {
 		hcm.SetWebSocketProxyReferences(wsProxies)
 	}
@@ -133,9 +134,7 @@ func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 	// Check if headers have already been written to avoid "superfluous response.WriteHeader call"
 	if w.Header().Get("X-Status-Set") == "" {
 		// Copy headers only if they haven't been written yet
-		for k, v := range resp.Header {
-			w.Header()[k] = v
-		}
+		maps.Copy(w.Header(), resp.Header)
 		w.Header().Set("X-Status-Set", "true")
 		w.WriteHeader(resp.StatusCode)
 	}
@@ -237,9 +236,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 	}
 
 	// Copy headers from original request
-	for k, v := range r.Header {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, r.Header)
 
 	// Add custom headers if configured
 	for key, value := range target.config.Connection.HTTP.Headers {
@@ -293,7 +290,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			// Don't taint provider for client disconnection and don't retry
 			return -1
 		}
-		
+
 		p.logger.Error("Failed to copy response",
 			"error", err,
 			"url", urlPath,
@@ -331,7 +328,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Pre-compute connection type and get healthy providers (using cache)
 	connType := p.getConnectionType(r)
 	healthyProviders := p.getHealthyProviders(connType)
-	
+
 	if len(healthyProviders) == 0 {
 		providerDetails := p.collectProviderDetails(connType)
 		p.writeErrorResponse(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
@@ -340,7 +337,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for _, target := range healthyProviders {
 		name := target.Name()
-		
+
 		if isWebSocket {
 			wsProxy := target.GetWebSocketProxy()
 			if wsProxy == nil {
@@ -382,7 +379,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Client disconnected - don't retry
 			return
 		}
-		
+
 		// If the request failed but we already sent headers to the client,
 		// we MUST NOT retry because the stream is already "committed" and corrupted.
 		if w.Header().Get("X-Status-Set") != "" {
@@ -447,4 +444,3 @@ func (p *Proxy) collectProviderDetails(connType string) []string {
 	}
 	return providerDetails
 }
-
