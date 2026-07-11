@@ -171,16 +171,12 @@ func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, update
 	// If the updated provider is too far behind, taint it
 	// Equivalent to: maxBlock > updatedBlockNumber && (maxBlock-updatedBlockNumber) > threshold
 	if maxBlock > updatedBlockNumber+uint64(h.config.BlockDiffThreshold) {
-		h.logger.Debug("provider block lag",
-			"provider", updatedRPCName,
-			"blockNumber", updatedBlockNumber,
-			"maxBlock", maxBlock,
-			"threshold", h.config.BlockDiffThreshold,
-			"path", h.path)
-
 		// Taint the specific provider (already found in loop above)
 		if targetChecker != nil {
-			targetChecker.TaintHealthCheck()
+			targetChecker.TaintHealthCheck(fmt.Sprintf(
+				"block lag: block=%d max=%d threshold=%d",
+				updatedBlockNumber, maxBlock, h.config.BlockDiffThreshold,
+			))
 		}
 	}
 }

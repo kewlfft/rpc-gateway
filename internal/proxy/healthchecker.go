@@ -94,6 +94,7 @@ type TaintConfig struct {
 	MaxWaitTime       time.Duration
 	ResetWaitDuration time.Duration
 	Reason            string
+	Detail            string // optional; logged at INFO when provider is tainted
 }
 
 var (
@@ -460,13 +461,7 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 
 	blockNumber, err := h.checkBlockNumber(ctx)
 	if err != nil {
-		// Detailed cause/error at DEBUG; state change is logged inside TaintHealthCheck.
-		h.config.Logger.Debug("provider tainted due to block number check failure",
-			"connectionType", h.config.ConnectionType,
-			"provider", h.config.Name,
-			"error", err,
-			"path", h.config.Path)
-		h.TaintHealthCheck()
+		h.TaintHealthCheck(fmt.Sprintf("eth_blockNumber: %v", err))
 		return
 	}
 
@@ -494,13 +489,7 @@ func (h *HealthChecker) checkAndSetGasLeftHealth() {
 
 	_, err := h.checkGasLeft(ctx)
 	if err != nil {
-		// Detailed cause/error at DEBUG; state change is logged inside TaintHealthCheck.
-		h.config.Logger.Debug("provider tainted due to gas left check failure",
-			"connectionType", h.config.ConnectionType,
-			"provider", h.config.Name,
-			"error", err,
-			"path", h.config.Path)
-		h.TaintHealthCheck()
+		h.TaintHealthCheck(fmt.Sprintf("eth_call gas-left: %v", err))
 		return
 	}
 }
@@ -614,14 +603,18 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 
 	// Logging
 	nextRetry := now.Add(wait)
-	h.config.Logger.Info("provider tainted",
+	logArgs := []any{
 		"conn", h.config.ConnectionType,
 		"name", h.config.Name,
 		"path", h.config.Path,
 		"reason", cfg.Reason,
 		"retry_sec", wait.Seconds(),
 		"next_retry", nextRetry,
-	)
+	}
+	if cfg.Detail != "" {
+		logArgs = append(logArgs, "detail", cfg.Detail)
+	}
+	h.config.Logger.Info("provider tainted", logArgs...)
 }
 
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
@@ -629,9 +622,14 @@ func (h *HealthChecker) TaintHTTP() {
 	h.Taint(httpTaintConfig)
 }
 
-// TaintHealthCheck is a convenience method that uses the health check taint configuration
-func (h *HealthChecker) TaintHealthCheck() {
-	h.Taint(healthCheckTaintConfig)
+// TaintHealthCheck is a convenience method that uses the health check taint configuration.
+// An optional detail string is included in the INFO log when the provider is tainted.
+func (h *HealthChecker) TaintHealthCheck(detail ...string) {
+	cfg := healthCheckTaintConfig
+	if len(detail) > 0 && detail[0] != "" {
+		cfg.Detail = detail[0]
+	}
+	h.Taint(cfg)
 }
 
 func (h *HealthChecker) RemoveTaint() {
