@@ -166,6 +166,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			Targets:         proxyConfig.Targets,
 			Logger:          logger,
 			PathIndex:       i, // Pass the path index for incremental staggering
+			MetricsEnabled:  config.Metrics.IsEnabled(),
 		}
 
 		// Create proxy

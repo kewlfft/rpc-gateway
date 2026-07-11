@@ -45,13 +45,14 @@ type ChainTypeHandler interface {
 
 // Proxy represents an RPC proxy with health checking and failover
 type Proxy struct {
-	hcm         *HealthCheckManager
-	timeout     time.Duration
-	logger      *slog.Logger
-	targets     []*NodeProvider
-	chainType   string
-	client      *http.Client
-	healthyPool sync.Pool
+	hcm             *HealthCheckManager
+	timeout         time.Duration
+	logger          *slog.Logger
+	targets         []*NodeProvider
+	chainType       string
+	client          *http.Client
+	healthyPool     sync.Pool
+	metricsEnabled  bool
 }
 
 // Ensure Proxy implements ChainTypeHandler
@@ -81,11 +82,12 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 	client := CreateOptimizedHTTPClient(clientKey, config.Timeout)
 
 	proxy := &Proxy{
-		hcm:       hcm,
-		timeout:   config.Timeout,
-		logger:    config.Logger,
-		chainType: config.ChainType,
-		client:    client,
+		hcm:            hcm,
+		timeout:        config.Timeout,
+		logger:         config.Logger,
+		chainType:      config.ChainType,
+		client:         client,
+		metricsEnabled: config.MetricsEnabled,
 	}
 	proxy.healthyPool.New = func() any {
 		return make([]*NodeProvider, 0, len(config.Targets))
@@ -167,9 +169,12 @@ func (p *Proxy) getConnectionType(r *http.Request) string {
 	return "http"
 }
 
-// recordMetrics records metrics for a request
+// recordMetrics records metrics for a request when enabled and returns duration in ms.
 func (p *Proxy) recordMetrics(method, name, status string, start time.Time) int64 {
 	duration := time.Since(start).Milliseconds()
+	if !p.metricsEnabled {
+		return duration
+	}
 	metricRequestDuration.WithLabelValues(method, name, status).Observe(float64(duration) / 1000)
 	metricRequestErrors.WithLabelValues(method, name, status).Inc()
 	return duration
@@ -179,7 +184,9 @@ func (p *Proxy) recordMetrics(method, name, status string, start time.Time) int6
 func (p *Proxy) handleProviderFailure(target *NodeProvider, r *http.Request, start time.Time, statusCode int, err error) {
 	name := target.Name()
 	duration := p.recordMetrics(r.Method, name, "error", start)
-	metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
+	if p.metricsEnabled {
+		metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
+	}
 
 	connectionType := p.getConnectionType(r)
 
