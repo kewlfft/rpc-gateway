@@ -602,14 +602,12 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 	h.mu.Unlock()
 
 	// Logging
-	nextRetry := now.Add(wait)
 	logArgs := []any{
 		"conn", h.config.ConnectionType,
 		"name", h.config.Name,
 		"path", h.config.Path,
 		"reason", cfg.Reason,
 		"retry_sec", wait.Seconds(),
-		"next_retry", nextRetry,
 	}
 	if cfg.Detail != "" {
 		logArgs = append(logArgs, "detail", cfg.Detail)
