@@ -42,11 +42,6 @@ func DefaultHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 	}
 }
 
-// HealthCheckHTTPClientConfig is now a wrapper around DefaultHTTPClientConfig to unify pools
-func HealthCheckHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
-	return DefaultHTTPClientConfig(timeout)
-}
-
 // HTTPClientManager manages shared HTTP clients with connection pooling
 type HTTPClientManager struct {
 	mu         sync.RWMutex
@@ -168,12 +163,6 @@ func (f *HTTPClientFactory) CreateOptimizedHTTPClient(proxyPath string, timeout 
 	return manager.GetOrCreateClient(key, config)
 }
 
-// CreateHealthCheckHTTPClient creates an optimized HTTP client for health checks
-func (f *HTTPClientFactory) CreateHealthCheckHTTPClient(proxyPath string, timeout time.Duration) *http.Client {
-	// Re-use CreateOptimizedHTTPClient to share the connection pool
-	return f.CreateOptimizedHTTPClient(proxyPath, timeout)
-}
-
 // Global factory instance (can be replaced for testing)
 var globalFactory = NewHTTPClientFactory()
 
@@ -189,11 +178,5 @@ func CreateOptimizedHTTPClient(key string, timeout time.Duration) *http.Client {
 	if after, ok := strings.CutPrefix(key, "proxy-"); ok {
 		proxyPath = after
 	}
-	return globalFactory.CreateOptimizedHTTPClient(proxyPath, timeout)
-}
-
-// CreateHealthCheckHTTPClientForProxy creates a shared health check client for all providers in a proxy path
-func CreateHealthCheckHTTPClientForProxy(proxyPath string, providerName string, timeout time.Duration) *http.Client {
-	// Use CreateOptimizedHTTPClient to ensure unified connection pool with user requests
 	return globalFactory.CreateOptimizedHTTPClient(proxyPath, timeout)
 }
