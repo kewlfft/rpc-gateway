@@ -1,11 +1,15 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 )
+
+// Shared TLS session cache for faster reconnects to HTTPS upstream RPC hosts.
+var tlsSessionCache = tls.NewLRUClientSessionCache(128)
 
 // HTTPClientSettings defines configuration for HTTP clients
 type HTTPClientSettings struct {
@@ -77,6 +81,9 @@ func (m *HTTPClientManager) GetOrCreateClient(key string, config HTTPClientSetti
 		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
 		DisableCompression:    config.DisableCompression,
 		ForceAttemptHTTP2:     config.ForceAttemptHTTP2,
+		TLSClientConfig: &tls.Config{
+			ClientSessionCache: tlsSessionCache,
+		},
 	}
 
 	client := &http.Client{

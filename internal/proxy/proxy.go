@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -44,12 +45,13 @@ type ChainTypeHandler interface {
 
 // Proxy represents an RPC proxy with health checking and failover
 type Proxy struct {
-	hcm       *HealthCheckManager
-	timeout   time.Duration
-	logger    *slog.Logger
-	targets   []*NodeProvider
-	chainType string
-	client    *http.Client
+	hcm         *HealthCheckManager
+	timeout     time.Duration
+	logger      *slog.Logger
+	targets     []*NodeProvider
+	chainType   string
+	client      *http.Client
+	healthyPool sync.Pool
 }
 
 // Ensure Proxy implements ChainTypeHandler
@@ -84,6 +86,9 @@ func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
 		logger:    config.Logger,
 		chainType: config.ChainType,
 		client:    client,
+	}
+	proxy.healthyPool.New = func() any {
+		return make([]*NodeProvider, 0, len(config.Targets))
 	}
 
 	// Create providers for each target with pre-allocated capacity
@@ -321,13 +326,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest, nil)
 			return
 		}
-		// Restore body for potential error handling
-		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
 
-	// Pre-compute connection type and get healthy providers (using cache)
+	// Pre-compute connection type and get healthy providers
 	connType := p.getConnectionType(r)
 	healthyProviders := p.getHealthyProviders(connType)
+	defer p.releaseHealthyProviders(healthyProviders)
 
 	if len(healthyProviders) == 0 {
 		providerDetails := p.collectProviderDetails(connType)
@@ -409,15 +413,21 @@ func (p *Proxy) GetTargets() []*NodeProvider {
 	return p.targets
 }
 
-// getHealthyProviders returns only healthy providers for the given connection type
+// getHealthyProviders returns only healthy providers for the given connection type.
+// The returned slice is pooled; call releaseHealthyProviders when done.
 func (p *Proxy) getHealthyProviders(connType string) []*NodeProvider {
-	healthy := make([]*NodeProvider, 0, len(p.targets))
+	healthy := p.healthyPool.Get().([]*NodeProvider)
+	healthy = healthy[:0]
 	for _, target := range p.targets {
 		if target.IsHealthy(connType) {
 			healthy = append(healthy, target)
 		}
 	}
 	return healthy
+}
+
+func (p *Proxy) releaseHealthyProviders(healthy []*NodeProvider) {
+	p.healthyPool.Put(healthy)
 }
 
 // collectProviderDetails collects diagnostic information about all providers
