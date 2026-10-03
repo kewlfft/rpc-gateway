@@ -144,7 +144,7 @@ type HealthChecker struct {
 	config          HealthCheckerConfig
 	httpClient      *http.Client
 	blockNumber     atomic.Uint64
-	gasCheckCounter atomic.Uint32
+	ethCallCheckCounter atomic.Uint32
 	mu              sync.RWMutex // Only for taint state
 	taintRemoveCh   chan struct{}
 	isTainted       atomic.Bool
@@ -398,36 +398,33 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 	return blockNumber, nil
 }
 
-// checkGasLeft performs an `eth_call` with a GasLeft.sol contract call. We also
-// want to perform an eth_call to make sure eth_call requests are also succeding
-// as blockNumber can be either cached or routed to a different service on the
-// RPC provider's side.
-func (h *HealthChecker) checkGasLeft(c context.Context) (uint64, error) {
-	// Skip gas left check for non-EVM chains or WebSocket connections
+// checkEthCall performs an `eth_call` against the SHA-256 precompile (0x02) to
+// verify the node executes EVM logic, as blockNumber can be either cached or
+// routed to a different service on the RPC provider's side.
+func (h *HealthChecker) checkEthCall(c context.Context) error {
+	// Skip eth_call check for non-EVM chains or WebSocket connections
 	if h.config.ChainType != "evm" || h.config.ConnectionType == "websocket" {
-		return 0, nil
+		return nil
 	}
 
-	gasLeft, err := performGasLeftCall(c, h.httpClient, h.config.URL)
-	if err != nil {
-		h.config.Logger.Error("gas call failed",
+	if err := performEthCallHealthCheck(c, h.httpClient, h.config.URL); err != nil {
+		h.config.Logger.Error("eth_call health check failed",
 			"connectionType", h.config.ConnectionType,
 			"error", err,
 			"provider", h.config.Name,
 			"path", h.config.Path)
-		return gasLeft, err
+		return err
 	}
-	h.config.Logger.Debug("gas left fetched",
+	h.config.Logger.Debug("eth_call health check ok",
 		"connectionType", h.config.ConnectionType,
 		"provider", h.config.Name,
-		"gasLeft", gasLeft,
 		"path", h.config.Path)
-	return gasLeft, nil
+	return nil
 }
 
 // CheckAndSetHealth makes the following calls
 // - `eth_blockNumber` - to get the latest block reported by the node
-// - `eth_call` - to get the gas left (runs sequentially after block number check)
+// - `eth_call` - SHA-256 precompile probe (runs sequentially after block number check)
 // And sets the health status based on the responses.
 func (h *HealthChecker) CheckAndSetHealth() {
 	// Fast path: if tainted, skip entirely (atomic read, very fast)
@@ -435,12 +432,12 @@ func (h *HealthChecker) CheckAndSetHealth() {
 		return
 	}
 
-	// Run block number check first, then gas left check sequentially
+	// Run block number check first, then eth_call check sequentially
 	// This reduces concurrent load and prevents wasting requests if block number fails
 	h.checkAndSetBlockNumberHealth()
-	// Only run gas left check after block number completes successfully
+	// Only run eth_call check after block number completes successfully
 	if !h.IsTainted() {
-		h.checkAndSetGasLeftHealth()
+		h.checkAndSetEthCallHealth()
 	}
 }
 
@@ -471,24 +468,23 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 	}
 }
 
-func (h *HealthChecker) checkAndSetGasLeftHealth() {
-	// Skip gas left check for non-EVM chains
+func (h *HealthChecker) checkAndSetEthCallHealth() {
+	// Skip eth_call check for non-EVM chains
 	if h.config.ChainType != "evm" {
 		return
 	}
 
-	// Run gas check only on every second health cycle, starting from the second one.
+	// Run eth_call check only on every second health cycle, starting from the second one.
 	// Sequence per provider: 1st call -> skip, 2nd -> run, 3rd -> skip, 4th -> run, ...
-	if h.gasCheckCounter.Add(1)%2 != 0 {
+	if h.ethCallCheckCounter.Add(1)%2 != 0 {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
 	defer cancel()
 
-	_, err := h.checkGasLeft(ctx)
-	if err != nil {
-		h.TaintHealthCheck(fmt.Sprintf("eth_call gas-left: %v", err))
+	if err := h.checkEthCall(ctx); err != nil {
+		h.TaintHealthCheck(fmt.Sprintf("eth_call sha256: %v", err))
 		return
 	}
 }

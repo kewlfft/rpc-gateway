@@ -50,7 +50,7 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 				return
 			case "eth_call":
 				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
 				return
 			}
 		}
@@ -75,7 +75,7 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 				return
 			case "eth_call":
 				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
 				return
 			}
 		}
@@ -165,7 +165,7 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 				return
 			case "eth_call":
 				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
 				return
 			}
 		}
@@ -273,7 +273,7 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 						return
 					case "eth_call":
 						w.Header().Set("Content-Type", "application/json")
-						w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+						w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
 						return
 					}
 				}
@@ -434,7 +434,7 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 				return
 			case "eth_call":
 				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
 				return
 			}
 		}
@@ -751,7 +751,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 					return
 				case "eth_call":
 					w.Header().Set("Content-Type", "application/json")
-					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
 					return
 				}
 			}
@@ -775,7 +775,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 					return
 				case "eth_call":
 					w.Header().Set("Content-Type", "application/json")
-					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
 					return
 				}
 			}

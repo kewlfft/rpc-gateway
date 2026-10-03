@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,20 +16,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mockEVMHealthRPC responds to eth_blockNumber and the SHA-256 precompile eth_call probe.
+func mockEVMHealthRPC(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		Method string `json:"method"`
+	}
+	_ = json.Unmarshal(body, &req)
+
+	w.Header().Set("Content-Type", "application/json")
+	switch req.Method {
+	case "eth_call":
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
+	default:
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
+	}
+}
+
 // TestBasicHealthchecker checks if it runs with default options.
 func TestBasicHealthchecker(t *testing.T) {
 	// Create a mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			// Mock eth_blockNumber response
-			if r.Method == "POST" {
-				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
-				return
-			}
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
+	server := httptest.NewServer(http.HandlerFunc(mockEVMHealthRPC))
 	defer server.Close()
 
 	healthcheckConfig := HealthCheckerConfig{
@@ -66,17 +75,7 @@ func TestBasicHealthchecker(t *testing.T) {
 
 func TestHealthCheckerTaint(t *testing.T) {
 	// Create a mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			// Mock eth_blockNumber response
-			if r.Method == "POST" {
-				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
-				return
-			}
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
+	server := httptest.NewServer(http.HandlerFunc(mockEVMHealthRPC))
 	defer server.Close()
 
 	// Create a health checker with short intervals for testing

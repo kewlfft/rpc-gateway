@@ -10,7 +10,43 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestPerformGasLeftCallErrors(t *testing.T) {
+func TestPerformEthCallHealthCheckSuccess(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"}`))
+		}),
+	)
+	defer server.Close()
+
+	client := CreateOptimizedHTTPClient("test-client-success", 30*time.Second)
+	err := performEthCallHealthCheck(context.TODO(), client, server.URL)
+
+	assert.NoError(t, err)
+}
+
+func TestPerformEthCallHealthCheckRejectsStubbedResult(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			// Echo stub (identity-style) must not pass the SHA-256 probe.
+			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xdeadbeef"}`))
+		}),
+	)
+	defer server.Close()
+
+	client := CreateOptimizedHTTPClient("test-client-stub", 30*time.Second)
+	err := performEthCallHealthCheck(context.TODO(), client, server.URL)
+
+	assert.ErrorContains(t, err, "unexpected result")
+}
+
+func TestPerformEthCallHealthCheckErrors(t *testing.T) {
 	t.Parallel()
 
 	t.Run("expect error when HTTP status is not 200", func(t *testing.T) {
@@ -28,9 +64,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 		defer server.Close()
 
 		client := CreateOptimizedHTTPClient("test-client", 30*time.Second)
-		gas, err := performGasLeftCall(context.TODO(), client, server.URL)
+		err := performEthCallHealthCheck(context.TODO(), client, server.URL)
 
-		assert.Zero(t, gas)
 		assert.Error(t, err)
 		assert.ErrorContains(t, err, "unexpected status")
 	})
@@ -51,9 +86,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 		defer server.Close()
 
 		client := CreateOptimizedHTTPClient("test-client", 30*time.Second)
-		gas, err := performGasLeftCall(context.TODO(), client, server.URL)
+		err := performEthCallHealthCheck(context.TODO(), client, server.URL)
 
-		assert.Zero(t, gas)
 		assert.Error(t, err)
 		assert.ErrorContains(t, err, "decode:")
 	})
@@ -77,9 +111,8 @@ func TestPerformGasLeftCallErrors(t *testing.T) {
 		defer cancel()
 
 		client := CreateOptimizedHTTPClient("test-client-timeout", 30*time.Second)
-		gas, err := performGasLeftCall(timeout, client, server.URL)
+		err := performEthCallHealthCheck(timeout, client, server.URL)
 
-		assert.Zero(t, gas)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	})
