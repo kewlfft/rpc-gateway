@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/kewlfft/rpc-gateway/internal/errors"
+	rpcerrors "github.com/kewlfft/rpc-gateway/internal/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -70,7 +71,7 @@ func (p *Proxy) RandomizeProviders() {
 }
 
 // NewProxy creates a new proxy
-func NewProxy(ctx context.Context, config Config) (*Proxy, error) {
+func NewProxy(config Config) (*Proxy, error) {
 	// Create health check manager
 	hcm, err := NewHealthCheckManager(config)
 	if err != nil {
@@ -133,7 +134,7 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 // bodyBytes is optional - if provided, it will be used to extract the request ID
 // providerDetails is optional - if provided, it will be included in the error log for diagnostics
 func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, message string, status int, bodyBytes []byte, providerDetails ...string) {
-	errors.WriteJSONRPCError(w, r, message, status, bodyBytes, providerDetails...)
+	rpcerrors.WriteJSONRPCError(w, r, message, status, bodyBytes, providerDetails...)
 }
 
 // copyResponse copies headers, status code, and body from the source response to the target response writer
@@ -158,8 +159,6 @@ func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 
 	return nil
 }
-
-// isBrokenPipeError checks if the error is a broken pipe error (client disconnected)
 
 // getConnectionType determines the connection type based on the request
 func (p *Proxy) getConnectionType(r *http.Request) string {
@@ -264,7 +263,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 	resp, err := p.client.Do(req)
 	if err != nil {
 		// Check if this is a context cancellation error
-		if ctx.Err() == context.Canceled || ctx.Err() == context.DeadlineExceeded {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			p.logger.Warn("Request cancelled or timed out",
 				"error", err,
 				"url", urlPath,

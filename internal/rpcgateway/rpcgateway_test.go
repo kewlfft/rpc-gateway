@@ -1,6 +1,7 @@
 package rpcgateway
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func TestProviderRandomization(t *testing.T) {
 	for range 10 {
 		gateway.SetRandomizeProviders(true)
 		newOrder := getProviderOrder(gateway, "test")
-		if !equalStringSlices(initialOrder, newOrder) {
+		if !slices.Equal(initialOrder, newOrder) {
 			changed = true
 			break
 		}
@@ -94,16 +95,4 @@ func getProviderOrder(gateway *RPCGateway, path string) []string {
 		names[i] = t.Name()
 	}
 	return names
-}
-
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

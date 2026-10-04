@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,11 +25,8 @@ var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 // JSON-RPC response structure
 type JSONRPCResponse struct {
-	Result any `json:"result"`
-	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
+	Result any           `json:"result"`
+	Error  *JSONRPCError `json:"error,omitempty"`
 }
 
 // makeJSONRPCCall makes an optimized JSON-RPC call
@@ -160,15 +159,8 @@ type HealthChecker struct {
 }
 
 func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
-	// Set default chain type if not specified
-	if config.ChainType == "" {
-		config.ChainType = "evm"
-	}
-
-	// Set default connection type if not specified
-	if config.ConnectionType == "" {
-		config.ConnectionType = "http"
-	}
+	config.ChainType = cmp.Or(config.ChainType, "evm")
+	config.ConnectionType = cmp.Or(config.ConnectionType, "http")
 
 	// Share the same connection pool as user requests for this proxy path
 	httpClient := CreateOptimizedHTTPClient("proxy-"+config.Path, config.Timeout)
@@ -217,7 +209,7 @@ func (h *HealthChecker) checkSolanaSlotViaWebSocket(conn *websocket.Conn) (uint6
 		if websocket.IsUnexpectedCloseError(err) {
 			return 0, fmt.Errorf("websocket closed unexpectedly: %w", err)
 		}
-		if err == websocket.ErrCloseSent {
+		if errors.Is(err, websocket.ErrCloseSent) {
 			return 0, fmt.Errorf("websocket close sent: %w", err)
 		}
 		return 0, fmt.Errorf("slot notification failed: %w", err)

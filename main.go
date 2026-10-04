@@ -49,7 +49,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("starting rpc-gateway", 
+	slog.Info("starting rpc-gateway",
 		"version", Version,
 		"git_commit", GitCommit,
 		"build_time", BuildTime,
@@ -67,29 +67,17 @@ func main() {
 		service.SetRandomizeProviders(true)
 	}
 
-	// Create a channel to receive the signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	// Create a context that we can cancel
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle shutdown signal in a separate goroutine
-	go func() {
-		<-sigChan
-		slog.Info("received shutdown signal")
-		cancel()
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	if err := service.Start(ctx); err != nil {
 		writeError("error: " + err.Error())
 		os.Exit(1)
 	}
 
-	// Wait for context cancellation
 	<-ctx.Done()
-	
+	slog.Info("received shutdown signal")
+
 	// Use a fresh context for shutdown
 	service.Stop(context.Background())
 }

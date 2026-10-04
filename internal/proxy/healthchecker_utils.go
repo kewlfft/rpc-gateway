@@ -3,10 +3,13 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 
@@ -15,46 +18,28 @@ type JSONRPCError struct {
 	Message string `json:"message"`
 }
 
-// parseHex parses a hex string to uint64 (optimized)
+// parseHex parses a hex string to uint64.
 func parseHex(s string) (uint64, error) {
 	if len(s) == 0 {
 		return 0, nil
 	}
-
-	// Strip 0x/0X prefix fast
-	if len(s) > 1 && s[0] == '0' && (s[1]|0x20) == 'x' { // lowercase via bit trick
-		s = s[2:]
-		if len(s) == 0 {
-			return 0, nil
-		}
+	if after, ok := strings.CutPrefix(s, "0x"); ok {
+		s = after
+	} else if after, ok := strings.CutPrefix(s, "0X"); ok {
+		s = after
 	}
-
-	// Fast validation (byte loop, no bounds branches)
-	for i := range s {
-		c := s[i]
-		switch {
-		case c >= '0' && c <= '9',
-			c >= 'a' && c <= 'f',
-			c >= 'A' && c <= 'F':
-			continue
-		default:
-			return 0, fmt.Errorf("invalid hex char '%c' in \"%s\"", c, s)
-		}
+	if len(s) == 0 {
+		return 0, nil
 	}
-
 	return strconv.ParseUint(s, 16, 64)
 }
 
 
-// isBrokenPipeError checks if an error is a broken pipe error
+// isBrokenPipeError checks if an error is a broken pipe / client disconnect error.
 func isBrokenPipeError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "broken pipe") || 
-		   strings.Contains(errStr, "connection reset by peer") ||
-		   strings.Contains(errStr, "use of closed network connection")
+	return errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, net.ErrClosed)
 }
 
 // sha256PrecompileProbe is eth_call against the EVM SHA-256 precompile (0x02).

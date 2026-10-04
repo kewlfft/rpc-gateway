@@ -170,7 +170,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}
 
 		// Create proxy
-		p, err := proxy.NewProxy(context.Background(), proxyCfg)
+		p, err := proxy.NewProxy(proxyCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create proxy: %w", err)
 		}

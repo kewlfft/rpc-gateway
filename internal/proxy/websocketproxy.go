@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -161,18 +163,15 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer ticker.Stop()
 
 	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				deadline := time.Now().Add(p.timeout)
-				if err := clientConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-					errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
-					return
-				}
-				if err := targetConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-					errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
-					return
-				}
+		for range ticker.C {
+			deadline := time.Now().Add(p.timeout)
+			if err := clientConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
+				return
+			}
+			if err := targetConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
+				return
 			}
 		}
 	}()
@@ -209,10 +208,7 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 
 	// Copy subscription IDs while holding the lock
 	p.mu.Lock()
-	subIDs := make([]string, 0, len(p.subscriptions))
-	for subID := range p.subscriptions {
-		subIDs = append(subIDs, subID)
-	}
+	subIDs := slices.Collect(maps.Keys(p.subscriptions))
 	p.mu.Unlock()
 
 	if len(subIDs) == 0 {
@@ -234,7 +230,7 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 	// Clear subscriptions map only after successfully getting a connection
 	// This ensures we don't lose track of subscriptions if connection fails
 	p.mu.Lock()
-	p.subscriptions = make(map[string]bool)
+	clear(p.subscriptions)
 	p.mu.Unlock()
 
 	// Send unsubscribe messages for each subscription
@@ -337,10 +333,7 @@ func (p *WebSocketProxy) cleanupConnectionSubscriptions(connectionSubscriptions 
 	}
 	p.mu.Unlock()
 
-	// Clear connection-specific map
-	for subID := range connectionSubscriptions {
-		delete(connectionSubscriptions, subID)
-	}
+	clear(connectionSubscriptions)
 }
 
 // getConnection gets a connection from the pool or creates a new one

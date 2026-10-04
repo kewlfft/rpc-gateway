@@ -3,7 +3,6 @@ package proxy
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -126,7 +125,7 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
-	httpFailoverProxy, err := NewProxy(context.Background(), rpcGatewayConfig)
+	httpFailoverProxy, err := NewProxy(rpcGatewayConfig)
 	assert.NoError(t, err)
 	assert.NotNil(t, httpFailoverProxy)
 
@@ -209,7 +208,7 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
-	httpFailoverProxy, err := NewProxy(context.Background(), rpcGatewayConfig)
+	httpFailoverProxy, err := NewProxy(rpcGatewayConfig)
 	assert.NotNil(t, httpFailoverProxy)
 	assert.NoError(t, err)
 
@@ -361,7 +360,7 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 	}
 
 	// Create proxy
-	proxy, err := NewProxy(context.Background(), config)
+	proxy, err := NewProxy(config)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -472,7 +471,7 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 
 	// Setup HttpFailoverProxy but not starting the HealthCheckManager
 	// so the no target will be tainted or marked as unhealthy by the HealthCheckManager
-	httpFailoverProxy, err := NewProxy(context.Background(), rpcGatewayConfig)
+	httpFailoverProxy, err := NewProxy(rpcGatewayConfig)
 	assert.NotNil(t, httpFailoverProxy)
 	assert.NoError(t, err)
 
@@ -536,7 +535,7 @@ func TestTronProxyURLRedirection(t *testing.T) {
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	proxy, err := NewProxy(context.Background(), rpcGatewayConfig)
+	proxy, err := NewProxy(rpcGatewayConfig)
 	assert.NoError(t, err)
 	assert.NotNil(t, proxy)
 
@@ -627,7 +626,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		}
 		config.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-		proxy, err := NewProxy(context.Background(), config)
+		proxy, err := NewProxy(config)
 		require.NoError(t, err)
 		require.NotNil(t, proxy)
 
@@ -699,14 +698,13 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		}
 		config.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-		proxy, err := NewProxy(context.Background(), config)
+		proxy, err := NewProxy(config)
 		require.NoError(t, err)
 		require.NotNil(t, proxy)
 
 		// Start health check manager to trigger health checks
 		hcm := proxy.GetHealthCheckManager()
-		ctx := context.Background()
-		err = hcm.Start(ctx)
+		err = hcm.Start(t.Context())
 		require.NoError(t, err)
 
 		// Wait a bit for health checks to run and taint providers
@@ -830,14 +828,13 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		}
 		config.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-		proxy, err := NewProxy(context.Background(), config)
+		proxy, err := NewProxy(config)
 		require.NoError(t, err)
 		require.NotNil(t, proxy)
 
 		// Start health check manager
 		hcm := proxy.GetHealthCheckManager()
-		ctx := context.Background()
-		err = hcm.Start(ctx)
+		err = hcm.Start(t.Context())
 		require.NoError(t, err)
 
 		// Wait for health checks to pass (providers should be healthy)
@@ -919,14 +916,13 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		}
 		config.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-		proxy, err := NewProxy(context.Background(), config)
+		proxy, err := NewProxy(config)
 		require.NoError(t, err)
 		require.NotNil(t, proxy)
 
 		// Start health check manager
 		hcm := proxy.GetHealthCheckManager()
-		ctx := context.Background()
-		err = hcm.Start(ctx)
+		err = hcm.Start(t.Context())
 		require.NoError(t, err)
 
 		// Wait for health checks to run
