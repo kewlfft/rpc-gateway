@@ -110,10 +110,9 @@ func (m *HTTPClientManager) Close() {
 		transport.CloseIdleConnections()
 	}
 
-	// Clear all maps
-	m.clients = make(map[string]*http.Client)
-	m.configs = make(map[string]HTTPClientSettings)
-	m.transports = make(map[string]*http.Transport)
+	clear(m.clients)
+	clear(m.configs)
+	clear(m.transports)
 }
 
 // HTTPClientFactory creates optimized HTTP clients with proper isolation
@@ -151,7 +150,7 @@ func (f *HTTPClientFactory) Close() {
 	for _, manager := range f.managers {
 		manager.Close()
 	}
-	f.managers = make(map[string]*HTTPClientManager)
+	clear(f.managers)
 }
 
 // CreateOptimizedHTTPClient creates an optimized HTTP client for a specific proxy

@@ -23,7 +23,7 @@ func TestPerformEthCallHealthCheckSuccess(t *testing.T) {
 	defer server.Close()
 
 	client := CreateOptimizedHTTPClient("test-client-success", 30*time.Second)
-	err := performEthCallHealthCheck(context.TODO(), client, server.URL)
+	err := performEthCallHealthCheck(t.Context(), client, server.URL)
 
 	assert.NoError(t, err)
 }
@@ -41,7 +41,7 @@ func TestPerformEthCallHealthCheckRejectsStubbedResult(t *testing.T) {
 	defer server.Close()
 
 	client := CreateOptimizedHTTPClient("test-client-stub", 30*time.Second)
-	err := performEthCallHealthCheck(context.TODO(), client, server.URL)
+	err := performEthCallHealthCheck(t.Context(), client, server.URL)
 
 	assert.ErrorContains(t, err, "unexpected result")
 }
@@ -64,7 +64,7 @@ func TestPerformEthCallHealthCheckErrors(t *testing.T) {
 		defer server.Close()
 
 		client := CreateOptimizedHTTPClient("test-client", 30*time.Second)
-		err := performEthCallHealthCheck(context.TODO(), client, server.URL)
+		err := performEthCallHealthCheck(t.Context(), client, server.URL)
 
 		assert.Error(t, err)
 		assert.ErrorContains(t, err, "unexpected status")
@@ -86,7 +86,7 @@ func TestPerformEthCallHealthCheckErrors(t *testing.T) {
 		defer server.Close()
 
 		client := CreateOptimizedHTTPClient("test-client", 30*time.Second)
-		err := performEthCallHealthCheck(context.TODO(), client, server.URL)
+		err := performEthCallHealthCheck(t.Context(), client, server.URL)
 
 		assert.Error(t, err)
 		assert.ErrorContains(t, err, "decode:")
@@ -107,7 +107,7 @@ func TestPerformEthCallHealthCheckErrors(t *testing.T) {
 		)
 		defer server.Close()
 
-		timeout, cancel := context.WithTimeout(context.TODO(), time.Second*1)
+		timeout, cancel := context.WithTimeout(t.Context(), time.Second*1)
 		defer cancel()
 
 		client := CreateOptimizedHTTPClient("test-client-timeout", 30*time.Second)

@@ -30,7 +30,7 @@ func parseHex(s string) (uint64, error) {
 	}
 
 	// Fast validation (byte loop, no bounds branches)
-	for i := 0; i < len(s); i++ {
+	for i := range s {
 		c := s[i]
 		switch {
 		case c >= '0' && c <= '9',

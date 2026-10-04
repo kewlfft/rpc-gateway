@@ -50,7 +50,7 @@ func TestBasicHealthchecker(t *testing.T) {
 	healthchecker, err := NewHealthChecker(healthcheckConfig)
 	assert.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
 	healthchecker.Start(ctx)
@@ -92,9 +92,7 @@ func TestHealthCheckerTaint(t *testing.T) {
 	require.NoError(t, err)
 
 	// Start the health checker
-	ctx, cancel := context.WithCancel(context.Background())
-	go checker.Start(ctx)
-	defer cancel()
+	go checker.Start(t.Context())
 
 	t.Logf("Test started at %v", time.Now())
 
@@ -178,9 +176,7 @@ func TestHealthCheckerTaintRemoval(t *testing.T) {
 	require.NoError(t, err)
 
 	// Start the health checker
-	ctx, cancel := context.WithCancel(context.Background())
-	go checker.Start(ctx)
-	defer cancel()
+	go checker.Start(t.Context())
 
 	// Taint the checker
 	waitTime := time.Millisecond * 200
@@ -195,7 +191,7 @@ func TestHealthCheckerTaintRemoval(t *testing.T) {
 	assert.True(t, checker.IsTainted(), "should be tainted after taint call")
 
 	// Stop the checker
-	err = checker.Stop(context.Background())
+	err = checker.Stop(t.Context())
 	require.NoError(t, err)
 
 	// Verify taint removal timer is cleaned up
@@ -267,10 +263,8 @@ func TestHealthCheckerConcurrentTaint(t *testing.T) {
 	const workers = 8
 	const iterations = 100
 
-	wg.Add(workers)
 	for range workers {
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range iterations {
 				// Interleave tainting and checks to exercise concurrent access paths.
 				healthchecker.TaintHTTP()
@@ -278,7 +272,7 @@ func TestHealthCheckerConcurrentTaint(t *testing.T) {
 				_ = healthchecker.IsHealthy()
 				healthchecker.RemoveTaint()
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
