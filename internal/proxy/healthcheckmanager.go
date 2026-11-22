@@ -89,9 +89,11 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 
 // Start starts all health checkers (non-blocking)
 func (h *HealthCheckManager) Start(ctx context.Context) {
-	// checker.Start is non-blocking; staggering is handled via each checker's InitialDelay
+	// Non-blocking; one shared epoch keeps all checkers of the path in step,
+	// staggered only by their InitialDelay
+	epoch := time.Now()
 	for _, checker := range h.checkers {
-		checker.Start(ctx)
+		checker.startAt(ctx, epoch)
 	}
 }
 

@@ -562,13 +562,12 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, proxy)
 
-		// Start health check manager to trigger health checks
+		// Run one health check per provider: both fail and get tainted
 		hcm := proxy.GetHealthCheckManager()
-		hcm.Start(t.Context())
-
-		// Wait a bit for health checks to run and taint providers
-		// Health checks have InitialDelay, so wait for that + a bit more
-		time.Sleep(2 * time.Second)
+		t.Cleanup(hcm.Stop)
+		for _, target := range config.Targets {
+			hcm.GetHealthChecker(target.Name, "http").CheckAndSetHealth()
+		}
 
 		// Verify all providers are tainted
 		for _, target := range config.Targets {
@@ -586,10 +585,11 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 
+		// All tainted at once: tried anyway as a last resort; here they fail too
 		var response map[string]any
 		err = jsonv2.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
-		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
+		assert.Contains(t, response["error"].(map[string]any)["message"], "All providers failed")
 	})
 
 	t.Run("all providers fail during request forwarding", func(t *testing.T) {
@@ -726,12 +726,10 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, proxy)
 
-		// Start health check manager
+		// Run Provider2's health check: it fails and gets tainted
 		hcm := proxy.GetHealthCheckManager()
-		hcm.Start(t.Context())
-
-		// Wait for health checks to run
-		time.Sleep(2 * time.Second)
+		t.Cleanup(hcm.Stop)
+		hcm.GetHealthChecker("Provider2", "http").CheckAndSetHealth()
 
 		// Verify Provider2 is tainted
 		checker2 := hcm.GetHealthChecker("Provider2", "http")
@@ -751,10 +749,12 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 
+		// The tainted provider is tried as a last resort; the one without a
+		// checker never is
 		var response map[string]any
 		err = jsonv2.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
-		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
+		assert.Contains(t, response["error"].(map[string]any)["message"], "All providers failed")
 	})
 }
 

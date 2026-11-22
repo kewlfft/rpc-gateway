@@ -420,6 +420,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	healthyProviders := p.getHealthyProviders(connType)
+	if len(healthyProviders) == 0 {
+		// Last resort: every endpoint tainted at once more likely means a
+		// problem on our side (network, DNS) than all providers failing, so
+		// try the tainted ones rather than refuse the request
+		healthyProviders = p.appendLastResortProviders(healthyProviders, connType)
+		if len(healthyProviders) > 0 {
+			p.logger.Debug("no healthy providers, trying tainted ones", "path", p.hcm.path, "count", len(healthyProviders))
+		}
+	}
 	defer p.releaseHealthyProviders(healthyProviders)
 
 	if len(healthyProviders) == 0 {
@@ -535,6 +544,17 @@ func (p *Proxy) getHealthyProviders(connType string) []*NodeProvider {
 		}
 	}
 	return healthy
+}
+
+// appendLastResortProviders appends the providers that have a health checker
+// for connType and are on the path's chain, tainted or not.
+func (p *Proxy) appendLastResortProviders(dst []*NodeProvider, connType string) []*NodeProvider {
+	for _, target := range p.targets {
+		if hc := target.HealthChecker(connType); hc != nil && !hc.wrongChain.Load() {
+			dst = append(dst, target)
+		}
+	}
+	return dst
 }
 
 func (p *Proxy) releaseHealthyProviders(healthy []*NodeProvider) {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -446,4 +447,92 @@ func TestScheduledCheckRespectsTimerTaints(t *testing.T) {
 	n := requests.Load()
 	limited.CheckAndSetHealth()
 	assert.Equal(t, n, requests.Load(), "no check while rate limited")
+}
+
+// The schedule is fixed from the first check, with the second one early so
+// block rates are known from the second cycle.
+func TestCheckTimeSchedule(t *testing.T) {
+	first := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		interval time.Duration
+		want     []time.Duration // offsets from first, k = 0..3
+	}{
+		{time.Minute, []time.Duration{0, minRateSpan, minRateSpan + time.Minute, minRateSpan + 2*time.Minute}},
+		{5 * time.Second, []time.Duration{0, 5 * time.Second, 10 * time.Second, 15 * time.Second}},
+	} {
+		for k, want := range tc.want {
+			assert.Equal(t, first.Add(want), checkTime(first, tc.interval, k), "interval %v, k=%d", tc.interval, k)
+		}
+	}
+}
+
+// Checks of one path stay in step however long each endpoint takes to
+// answer: the old loop restarted its timer after each check, so a slower
+// endpoint fell a little further behind every cycle.
+func TestChecksStayInStepDespiteSlowEndpoint(t *testing.T) {
+	arrivals := func(delay time.Duration) (string, func() []time.Time) {
+		var mu sync.Mutex
+		var at []time.Time
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(body), "eth_blockNumber") {
+				mu.Lock()
+				at = append(at, time.Now())
+				mu.Unlock()
+			}
+			time.Sleep(delay)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			mockEVMHealthRPC(w, r)
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL, func() []time.Time { mu.Lock(); defer mu.Unlock(); return slices.Clone(at) }
+	}
+	slowURL, slowAt := arrivals(60 * time.Millisecond)
+	fastURL, fastAt := arrivals(0)
+
+	config := createConfig()
+	config.Path = t.Name()
+	config.Logger = quietLogger
+	config.HealthChecks.Interval = 200 * time.Millisecond
+	config.Targets = []NodeProviderConfig{httpTarget("slow", slowURL), httpTarget("fast", fastURL)}
+	hcm, err := NewHealthCheckManager(config)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	hcm.Start(ctx)
+	time.Sleep(1100 * time.Millisecond) // ~6 cycles: drift would reach 6 × 60-120 ms
+	cancel()
+	hcm.Stop()
+
+	slow, fast := slowAt(), fastAt()
+	n := min(len(slow), len(fast))
+	require.GreaterOrEqual(t, n, 4)
+	for k := range n {
+		assert.InDelta(t, 0, slow[k].Sub(fast[k]).Seconds(), 0.04, "cycle %d", k)
+	}
+}
+
+// A health check answered with 429 gets the short, probed rate-limit taint
+// (honouring Retry-After), not the long health-check backoff.
+func TestHealthCheck429GetsRateLimitTaint(t *testing.T) {
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(limited.Close)
+	for _, conn := range []string{"http", "websocket"} {
+		t.Run(conn, func(t *testing.T) {
+			url := limited.URL
+			if conn == "websocket" {
+				url = "ws" + strings.TrimPrefix(url, "http")
+			}
+			hc := NewHealthChecker(HealthCheckerConfig{Logger: quietLogger, URL: url, Name: "p", Path: t.Name(), Timeout: time.Second, ConnectionType: conn})
+			t.Cleanup(hc.Stop)
+			hc.CheckAndSetHealth()
+			require.True(t, hc.IsTainted())
+			hc.mu.Lock()
+			defer hc.mu.Unlock()
+			assert.True(t, hc.taint.cfg.Probe, "rate-limit taint")
+			assert.Equal(t, 7*time.Second, hc.taint.waitTime, "Retry-After honoured")
+		})
+	}
 }

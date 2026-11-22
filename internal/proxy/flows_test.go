@@ -515,3 +515,27 @@ func TestRateLimitHonoursRetryAfter(t *testing.T) {
 	assert.Equal(t, int32(1), a.probes.Load())
 	assert.False(t, hcA.IsTainted())
 }
+
+// When every endpoint is tainted at once (likely a problem on our side), the
+// tainted ones are tried anyway; wrong-chain endpoints never are.
+func TestAllTaintedProvidersAreTriedAsLastResort(t *testing.T) {
+	var served, wrongServed atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":9,"result":"0x1"}`))
+	}))
+	defer up.Close()
+	wrong := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wrongServed.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":9,"result":"0x38"}`))
+	}))
+	defer wrong.Close()
+	p := newTestProxy(t, "", httpTarget("wrong", wrong.URL), httpTarget("a", up.URL))
+	t.Cleanup(p.hcm.Stop)
+	p.hcm.GetHealthChecker("wrong", "http").wrongChain.Store(true)
+	p.hcm.GetHealthChecker("a", "http").TaintHealthCheck("network blip")
+
+	assert.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code)
+	assert.Equal(t, int32(1), served.Load())
+	assert.Zero(t, wrongServed.Load())
+}

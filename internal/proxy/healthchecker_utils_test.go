@@ -131,5 +131,5 @@ func TestPerformEthCallHealthCheckSendsProviderHeaders(t *testing.T) {
 
 	client := CreateOptimizedHTTPClient("test-client-headers", 30*time.Second)
 	assert.NoError(t, performEthCallHealthCheck(t.Context(), client, server.URL, map[string]string{"X-Api-Key": "secret"}))
-	assert.ErrorContains(t, performEthCallHealthCheck(t.Context(), client, server.URL, nil), "unexpected status 401")
+	assert.ErrorContains(t, performEthCallHealthCheck(t.Context(), client, server.URL, nil), "unexpected status code: 401")
 }

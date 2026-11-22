@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	jsonv2 "encoding/json/v2"
 )
@@ -25,6 +26,20 @@ func parseHex(s string) (uint64, error) {
 		return 0, errors.New("empty hex quantity")
 	}
 	return strconv.ParseUint(s, 16, 64)
+}
+
+// rateLimitedError is a health check answered with HTTP 429; wait is the
+// provider's Retry-After hint (0 if none).
+type rateLimitedError struct{ wait time.Duration }
+
+func (e *rateLimitedError) Error() string { return "rate limited: HTTP 429" }
+
+// statusError describes a non-200 health check response.
+func statusError(resp *http.Response) error {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return &rateLimitedError{retryAfter(resp.Header)}
+	}
+	return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 }
 
 // isBrokenPipeError checks if an error is a broken pipe / client disconnect error.
@@ -73,7 +88,7 @@ func performEthCallHealthCheck(ctx context.Context, client *http.Client, url str
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ethCallHealth: unexpected status %d", resp.StatusCode)
+		return fmt.Errorf("ethCallHealth: %w", statusError(resp))
 	}
 
 	var result JSONRPCResponse

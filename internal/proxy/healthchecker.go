@@ -61,7 +61,7 @@ func (h *HealthChecker) makeJSONRPCCall[P any](ctx context.Context, method strin
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, statusError(resp)
 	}
 
 	var out JSONRPCResponse
@@ -346,6 +346,9 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 		if err != nil {
 			// The status says why a handshake failed (e.g. 403 IP blocked, 429 rate limited)
 			if resp != nil {
+				if resp.StatusCode == http.StatusTooManyRequests {
+					return sample, fmt.Errorf("%w (%w)", err, statusError(resp))
+				}
 				return sample, fmt.Errorf("%w (HTTP %d)", err, resp.StatusCode)
 			}
 			return sample, err
@@ -413,7 +416,7 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 
 		// Check response status
 		if resp.StatusCode != http.StatusOK {
-			return sample, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			return sample, statusError(resp)
 		}
 
 		if err := jsonv2.UnmarshalRead(resp.Body, &response); err != nil {
@@ -541,7 +544,7 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth(recovering bool) bool {
 
 	sample, err := h.checkBlockNumber(ctx, recovering)
 	if err != nil {
-		h.TaintHealthCheck(fmt.Sprintf("%s: %v", h.blockCheckMethod(), err))
+		h.taintCheckFailure(fmt.Sprintf("%s: %v", h.blockCheckMethod(), err), err)
 		return false
 	}
 
@@ -571,14 +574,20 @@ func (h *HealthChecker) checkAndSetEthCallHealth(force bool) bool {
 	defer cancel()
 
 	if err := h.checkEthCall(ctx); err != nil {
-		h.TaintHealthCheck(fmt.Sprintf("eth_call sha256: %v", err))
+		h.taintCheckFailure(fmt.Sprintf("eth_call sha256: %v", err), err)
 		return false
 	}
 	return true
 }
 
+// Start starts the check loop, with the schedule counted from now.
 func (h *HealthChecker) Start(c context.Context) {
-	// Use the provided initial delay from config
+	h.startAt(c, time.Now())
+}
+
+// startAt starts the check loop on a schedule counted from epoch. Checkers of
+// one path share an epoch so their checks stay in the same cycle.
+func (h *HealthChecker) startAt(c context.Context, epoch time.Time) {
 	h.config.Logger.Debug("starting health checker with initial delay",
 		"initialDelayMs", h.config.InitialDelay.Milliseconds(),
 		"connectionType", h.config.ConnectionType,
@@ -586,15 +595,28 @@ func (h *HealthChecker) Start(c context.Context) {
 		"path", h.config.Path)
 
 	// Start the health checker in a separate goroutine to avoid blocking
-	go h.runHealthChecker(c)
+	go h.runHealthChecker(c, epoch.Add(h.config.InitialDelay))
+}
+
+// checkTime is when check k (from 0) is due. The schedule is fixed, not
+// restarted after each check, so endpoints with slower checks don't drift out
+// of the cycle their peers are judged in. The second check comes after
+// minRateSpan rather than a whole interval, so every endpoint has a block rate
+// early and the lag gate can judge early answers from the second cycle on.
+func checkTime(first time.Time, interval time.Duration, k int) time.Time {
+	if k == 0 {
+		return first
+	}
+	boot := min(minRateSpan, interval)
+	return first.Add(boot + time.Duration(k-1)*interval)
 }
 
 // runHealthChecker runs the main health checking loop in a separate goroutine
-func (h *HealthChecker) runHealthChecker(c context.Context) {
-	timer := time.NewTimer(h.config.InitialDelay)
+func (h *HealthChecker) runHealthChecker(c context.Context, first time.Time) {
+	timer := time.NewTimer(time.Until(first))
 	defer timer.Stop()
 
-	for {
+	for k := 0; ; {
 		select {
 		case <-c.Done():
 			h.config.Logger.Info("health checker shutting down gracefully",
@@ -603,7 +625,12 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 			return
 		case <-timer.C:
 			h.CheckAndSetHealth()
-			timer.Reset(h.config.Interval)
+			// Next slot still ahead; one missed by a check that overran is skipped
+			k++
+			for now := time.Now(); h.config.Interval > 0 && !checkTime(first, h.config.Interval, k).After(now); {
+				k++
+			}
+			timer.Reset(time.Until(checkTime(first, h.config.Interval, k)))
 		}
 	}
 }
@@ -731,6 +758,19 @@ func (h *HealthChecker) TaintRateLimited(wait time.Duration) {
 	cfg := rateLimitTaintConfig
 	cfg.Wait = wait
 	h.Taint(cfg)
+}
+
+// taintCheckFailure taints after a failed health check. A 429 means the
+// endpoint is up but over its limit, which health checks count against: it
+// gets the short, probed rate-limit taint, not the long health-check backoff.
+func (h *HealthChecker) taintCheckFailure(detail string, err error) {
+	if rl, ok := errors.AsType[*rateLimitedError](err); ok {
+		cfg := rateLimitTaintConfig
+		cfg.Wait, cfg.Detail = rl.wait, detail
+		h.Taint(cfg)
+		return
+	}
+	h.TaintHealthCheck(detail)
 }
 
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
