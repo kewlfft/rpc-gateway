@@ -5,6 +5,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -29,24 +31,26 @@ type JSONRPCResponse struct {
 	Error  *JSONRPCError `json:"error,omitempty"`
 }
 
-// makeJSONRPCCall makes an optimized JSON-RPC call
-func (h *HealthChecker) makeJSONRPCCall(ctx context.Context, method string, params []any) (*JSONRPCResponse, error) {
+type jsonRPCRequest[P any] struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      int    `json:"id"`
+	Method  string `json:"method"`
+	Params  P      `json:"params"`
+}
+
+// loadAtomic is a Go 1.27 generic method helper for typed atomic.Value loads.
+func (h *HealthChecker) loadAtomic[T any](slot *atomic.Value) (T, bool) {
+	v, ok := slot.Load().(T)
+	return v, ok
+}
+
+// makeJSONRPCCall makes an optimized JSON-RPC call (generic params via Go 1.27 methods).
+func (h *HealthChecker) makeJSONRPCCall[P any](ctx context.Context, method string, params P) (*JSONRPCResponse, error) {
 	buf := bufPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	defer func() {
-		// Ensure buffer is always returned to pool, even on panic
-		bufPool.Put(buf)
-	}()
+	defer bufPool.Put(buf)
 
-	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
-
-	if err := enc.Encode(struct {
-		JSONRPC string `json:"jsonrpc"`
-		ID      int    `json:"id"`
-		Method  string `json:"method"`
-		Params  any    `json:"params"`
-	}{"2.0", 1, method, params}); err != nil {
+	if err := jsonv2.MarshalWrite(buf, jsonRPCRequest[P]{"2.0", 1, method, params}, jsontext.EscapeForHTML(false)); err != nil {
 		return nil, fmt.Errorf("failed to encode request: %w", err)
 	}
 
@@ -59,7 +63,6 @@ func (h *HealthChecker) makeJSONRPCCall(ctx context.Context, method string, para
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 
-	// Add custom headers if configured
 	for key, value := range h.config.Headers {
 		req.Header.Set(key, value)
 	}
@@ -76,7 +79,7 @@ func (h *HealthChecker) makeJSONRPCCall(ctx context.Context, method string, para
 	}
 
 	var out JSONRPCResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := jsonv2.UnmarshalRead(resp.Body, &out); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 	if out.Error != nil {
@@ -140,13 +143,13 @@ type HealthCheckerConfig struct {
 type BlockNumberUpdateCallback func(blockNumber uint64)
 
 type HealthChecker struct {
-	config          HealthCheckerConfig
-	httpClient      *http.Client
-	blockNumber     atomic.Uint64
+	config              HealthCheckerConfig
+	httpClient          *http.Client
+	blockNumber         atomic.Uint64
 	ethCallCheckCounter atomic.Uint32
-	mu              sync.RWMutex // Only for taint state
-	taintRemoveCh   chan struct{}
-	isTainted       atomic.Bool
+	mu                  sync.RWMutex // Only for taint state
+	taintRemoveCh       chan struct{}
+	isTainted           atomic.Bool
 
 	// Taint state
 	taint TaintState
@@ -354,8 +357,7 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 			return 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		}
 
-		// Decode response
-		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		if err := jsonv2.UnmarshalRead(resp.Body, &response); err != nil {
 			return 0, fmt.Errorf("failed to decode response: %w", err)
 		}
 
@@ -455,7 +457,7 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 
 	h.blockNumber.Store(blockNumber)
 
-	if callback, ok := h.onBlockNumberUpdate.Load().(BlockNumberUpdateCallback); ok && callback != nil {
+	if callback, ok := h.loadAtomic[BlockNumberUpdateCallback](&h.onBlockNumberUpdate); ok && callback != nil {
 		callback(blockNumber)
 	}
 }
@@ -545,7 +547,7 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 
 	// Only call cleanup callback on first tainting
 	if h.config.ConnectionType == "websocket" {
-		if callback, ok := h.onBeforeTaint.Load().(func()); ok && callback != nil {
+		if callback, ok := h.loadAtomic[func()](&h.onBeforeTaint); ok && callback != nil {
 			callback()
 		}
 	}

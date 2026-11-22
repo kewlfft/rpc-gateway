@@ -7,18 +7,20 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	jsonv2 "encoding/json/v2"
 
 	"github.com/gorilla/websocket"
 	"github.com/kewlfft/rpc-gateway/internal/rpcgateway"
@@ -46,6 +48,12 @@ type result struct {
 	Flags         []string
 }
 
+type burstOut struct {
+	ok     bool
+	result string
+	issue  string
+}
+
 func trunc(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -55,16 +63,11 @@ func trunc(s string, n int) string {
 
 func containsAny(s string, needles ...string) bool {
 	s = strings.ToLower(s)
-	for _, n := range needles {
-		if strings.Contains(s, n) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(needles, func(n string) bool { return strings.Contains(s, n) })
 }
 
 func errJSON(errObj any) string {
-	b, _ := json.Marshal(errObj)
+	b, _ := jsonv2.Marshal(errObj)
 	return string(b)
 }
 
@@ -146,11 +149,7 @@ func burstSummary(kind string, issues []string) []string {
 	return []string{fmt.Sprintf("%s burst %d/%d failed: %s", kind, len(issues), burstN, strings.Join(parts, "; "))}
 }
 
-func collectBurst(kind string, outs []struct {
-	ok     bool
-	result string
-	issue  string
-}) (string, []string, error) {
+func collectBurst(kind string, outs []burstOut) (string, []string, error) {
 	var block string
 	var okN int
 	var issues []string
@@ -190,7 +189,7 @@ func postJSON(ctx context.Context, client *http.Client, url string, headers map[
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	var data map[string]any
-	_ = json.Unmarshal(raw, &data)
+	_ = jsonv2.Unmarshal(raw, &data)
 	return res.StatusCode, data, raw, nil
 }
 
@@ -229,16 +228,10 @@ func callWS(conn *websocket.Conn, id int, method string, params []any) (map[stri
 }
 
 func httpBurst(ctx context.Context, item urlItem, client *http.Client) (string, []string, error) {
-	outs := make([]struct {
-		ok     bool
-		result string
-		issue  string
-	}, burstN)
+	outs := make([]burstOut, burstN)
 	var wg sync.WaitGroup
 	for i := range outs {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			st, d, raw, err := postJSON(ctx, client, item.URL, item.Headers, blockReq)
 			if err != nil || st < 200 || st >= 300 || rpcErr(d) != nil || d == nil {
 				outs[i].issue = classify(st, string(raw), rpcErr(d), err)
@@ -250,23 +243,17 @@ func httpBurst(ctx context.Context, item urlItem, client *http.Client) (string, 
 				return
 			}
 			outs[i].ok, outs[i].result = true, trunc(fmt.Sprint(res), 48)
-		}(i)
+		})
 	}
 	wg.Wait()
 	return collectBurst("http", outs)
 }
 
 func wsBurst(ctx context.Context, item urlItem, timeout time.Duration) (string, []string, error) {
-	outs := make([]struct {
-		ok     bool
-		result string
-		issue  string
-	}, burstN)
+	outs := make([]burstOut, burstN)
 	var wg sync.WaitGroup
 	for i := range outs {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			conn, status, err := dialWS(ctx, item.URL, timeout)
 			if err != nil {
 				outs[i].issue = classify(status, "", nil, err)
@@ -284,7 +271,7 @@ func wsBurst(ctx context.Context, item urlItem, timeout time.Duration) (string, 
 				return
 			}
 			outs[i].ok, outs[i].result = true, trunc(fmt.Sprint(res), 48)
-		}(i)
+		})
 	}
 	wg.Wait()
 	return collectBurst("ws", outs)
@@ -421,10 +408,7 @@ func probeOne(item urlItem, timeout time.Duration, client *http.Client) result {
 func collectURLs(cfg rpcgateway.RPCGatewayConfig) []urlItem {
 	var out []urlItem
 	for _, p := range cfg.Proxies {
-		ct := p.ChainType
-		if ct == "" {
-			ct = "evm"
-		}
+		ct := cmp.Or(p.ChainType, "evm")
 		for _, t := range p.Targets {
 			if u := t.Connection.HTTP.URL; u != "" {
 				out = append(out, urlItem{Path: p.Path, Name: t.Name, Kind: "http", URL: u, Headers: t.Connection.HTTP.Headers, ChainType: ct})
@@ -442,17 +426,14 @@ func main() {
 	concurrency := flag.Int("c", 20, "max concurrent probes")
 	home, _ := os.UserHomeDir()
 	defaultCfg := filepath.Join(home, ".config", "bots", "rpc_config.yml")
+	probesHelp := fmt.Sprintf(`probes:
+  evm HTTP  %d× concurrent eth_blockNumber (WARN if any blocked) + eth_getTransactionReceipt + eth_getLogs
+  evm WS    %d× concurrent dial+eth_blockNumber (WARN if any blocked) + eth_subscribe(newHeads) + eth_getTransactionReceipt
+  solana    HTTP getHealth / WS slotSubscribe
+  tron      HTTP /wallet/getnowblock
+`, burstN, burstN)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: check-rpc [flags] [config.yml]
-
-Default: %s
-
-  evm HTTP  5× eth_blockNumber + receipt + getLogs
-  evm WS    5× dial+eth_blockNumber + subscribe + receipt
-  solana    getHealth / slotSubscribe
-  tron      /wallet/getnowblock
-
-`, defaultCfg)
+		fmt.Fprintf(os.Stderr, "Usage: check-rpc [flags] [config.yml]\n\nDefault: %s\n\n%s", defaultCfg, probesHelp)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -472,30 +453,31 @@ Default: %s
 		os.Exit(2)
 	}
 	urls := collectURLs(cfg)
-	if *concurrency < 1 {
-		*concurrency = 1
-	}
+	*concurrency = max(*concurrency, 1)
 
-	fmt.Printf("config: %s\nurls: %d  timeout: %s  concurrency: %d\n\n", cfgPath, len(urls), timeout, *concurrency)
+	fmt.Printf("config: %s\nurls: %d  timeout: %s  concurrency: %d\n%s\n", cfgPath, len(urls), timeout, *concurrency, probesHelp)
 
 	client := &http.Client{Timeout: *timeout}
 	sem := make(chan struct{}, *concurrency)
 	results := make([]result, len(urls))
 	var wg sync.WaitGroup
 	for i, item := range urls {
-		wg.Add(1)
-		go func(i int, item urlItem) {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			results[i] = probeOne(item, *timeout, client)
-		}(i, item)
+		})
 	}
 	wg.Wait()
 
-	sort.Slice(results, func(i, j int) bool {
-		a, b := results[i], results[j]
-		return a.Path+"\x00"+a.Name+"\x00"+a.Kind < b.Path+"\x00"+b.Name+"\x00"+b.Kind
+	slices.SortFunc(results, func(a, b result) int {
+		if c := cmp.Compare(a.Path, b.Path); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Kind, b.Kind)
 	})
 
 	fail, warned := 0, 0

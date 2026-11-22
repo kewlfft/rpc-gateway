@@ -13,25 +13,29 @@ type HealthCheckConfig struct {
 	BlockDiffThreshold uint64 `yaml:"blockDiffThreshold"`
 }
 
+// HTTPConnection is the HTTP RPC endpoint config for a provider.
+type HTTPConnection struct {
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
+}
+
+// WebSocketConnection is the WebSocket RPC endpoint config for a provider.
+type WebSocketConnection struct {
+	URL string `yaml:"url"`
+}
+
+// ConnectionConfig holds HTTP and/or WebSocket endpoints for a provider.
+// Named types (vs anonymous nested structs) keep YAML tags clear and allow
+// Go 1.27 promoted-field struct literals if these are embedded later.
+type ConnectionConfig struct {
+	HTTP      HTTPConnection      `yaml:"http"`
+	WebSocket WebSocketConnection `yaml:"websocket"`
+}
+
 // NodeProviderConfig defines the configuration for a single RPC provider
 type NodeProviderConfig struct {
-	// Name of the provider (e.g., "infura", "alchemy")
-	Name string `yaml:"name"`
-	// Connection details for the provider
-	Connection struct {
-		// HTTP connection details
-		HTTP struct {
-			// RPC endpoint URL
-			URL string `yaml:"url"`
-			// Optional custom headers for the provider (e.g., API keys)
-			Headers map[string]string `yaml:"headers"`
-		} `yaml:"http"`
-		// WebSocket connection details
-		WebSocket struct {
-			// WebSocket endpoint URL
-			URL string `yaml:"url"`
-		} `yaml:"websocket"`
-	} `yaml:"connection"`
+	Name       string           `yaml:"name"`
+	Connection ConnectionConfig `yaml:"connection"`
 }
 
 // Config defines the configuration for a proxy instance

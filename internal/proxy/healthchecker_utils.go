@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -10,8 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-)
 
+	jsonv2 "encoding/json/v2"
+)
 
 type JSONRPCError struct {
 	Code    int    `json:"code"`
@@ -33,7 +33,6 @@ func parseHex(s string) (uint64, error) {
 	}
 	return strconv.ParseUint(s, 16, 64)
 }
-
 
 // isBrokenPipeError checks if an error is a broken pipe / client disconnect error.
 func isBrokenPipeError(err error) bool {
@@ -81,7 +80,7 @@ func performEthCallHealthCheck(ctx context.Context, client *http.Client, url str
 	}
 
 	var result JSONRPCResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := jsonv2.UnmarshalRead(resp.Body, &result); err != nil {
 		return fmt.Errorf("ethCallHealth: decode: %w", err)
 	}
 	if result.Error != nil {

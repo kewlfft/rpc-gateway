@@ -1,10 +1,11 @@
 package errors
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"slices"
+
+	jsonv2 "encoding/json/v2"
 )
 
 // WriteJSONRPCError writes an error response in JSON-RPC format and logs the error
@@ -16,20 +17,20 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 	// Extract request ID from body bytes if provided
 	if len(bodyBytes) > 0 && r.Header.Get("Content-Type") == "application/json" {
 		var req map[string]any
-		if json.Unmarshal(bodyBytes, &req) == nil && req["jsonrpc"] != nil {
+		if jsonv2.Unmarshal(bodyBytes, &req) == nil && req["jsonrpc"] != nil {
 			requestID = req["id"]
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	// Check if headers have already been written by checking if status was set
 	if w.Header().Get("X-Status-Set") == "" {
 		w.Header().Set("X-Status-Set", "true")
 		w.WriteHeader(status)
 	}
 
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	_ = jsonv2.MarshalWrite(w, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      requestID,
 		"error": map[string]any{
@@ -51,4 +52,4 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 		logAttrs = append(logAttrs, "providers", providerDetails)
 	}
 	slog.Error("JSON-RPC error response", logAttrs...)
-} 
+}

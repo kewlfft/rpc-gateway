@@ -87,38 +87,12 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 	rpcGatewayConfig := createConfig()
 	rpcGatewayConfig.Targets = []NodeProviderConfig{
 		{
-			Name: "Server1",
-			Connection: struct {
-				HTTP struct {
-					URL     string            `yaml:"url"`
-					Headers map[string]string `yaml:"headers"`
-				} `yaml:"http"`
-				WebSocket struct {
-					URL string `yaml:"url"`
-				} `yaml:"websocket"`
-			}{HTTP: struct {
-				URL     string            `yaml:"url"`
-				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPC1Server.URL, Headers: nil}, WebSocket: struct {
-				URL string `yaml:"url"`
-			}{URL: ""}},
+			Name:       "Server1",
+			Connection: ConnectionConfig{HTTP: HTTPConnection{URL: fakeRPC1Server.URL, Headers: nil}, WebSocket: WebSocketConnection{URL: ""}},
 		},
 		{
-			Name: "Server2",
-			Connection: struct {
-				HTTP struct {
-					URL     string            `yaml:"url"`
-					Headers map[string]string `yaml:"headers"`
-				} `yaml:"http"`
-				WebSocket struct {
-					URL string `yaml:"url"`
-				} `yaml:"websocket"`
-			}{HTTP: struct {
-				URL     string            `yaml:"url"`
-				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPC2Server.URL, Headers: nil}, WebSocket: struct {
-				URL string `yaml:"url"`
-			}{URL: ""}},
+			Name:       "Server2",
+			Connection: ConnectionConfig{HTTP: HTTPConnection{URL: fakeRPC2Server.URL, Headers: nil}, WebSocket: WebSocketConnection{URL: ""}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -186,21 +160,8 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 	rpcGatewayConfig := createConfig()
 	rpcGatewayConfig.Targets = []NodeProviderConfig{
 		{
-			Name: "Server1",
-			Connection: struct {
-				HTTP struct {
-					URL     string            `yaml:"url"`
-					Headers map[string]string `yaml:"headers"`
-				} `yaml:"http"`
-				WebSocket struct {
-					URL string `yaml:"url"`
-				} `yaml:"websocket"`
-			}{HTTP: struct {
-				URL     string            `yaml:"url"`
-				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPC1Server.URL, Headers: nil}, WebSocket: struct {
-				URL string `yaml:"url"`
-			}{URL: ""}},
+			Name:       "Server1",
+			Connection: ConnectionConfig{HTTP: HTTPConnection{URL: fakeRPC1Server.URL, Headers: nil}, WebSocket: WebSocketConnection{URL: ""}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -333,25 +294,10 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 		Targets: []NodeProviderConfig{
 			{
 				Name: "test",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{
-						URL:     server.URL,
-						Headers: nil,
-					},
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP: HTTPConnection{URL: server.URL,
+						Headers: nil},
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 		},
@@ -450,19 +396,8 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 
 	rpcGatewayConfig.Targets = []NodeProviderConfig{
 		{
-			Name: "Server1",
-			Connection: struct {
-				HTTP struct {
-					URL     string            `yaml:"url"`
-					Headers map[string]string `yaml:"headers"`
-				} `yaml:"http"`
-				WebSocket struct {
-					URL string `yaml:"url"`
-				} `yaml:"websocket"`
-			}{HTTP: struct {
-				URL     string            `yaml:"url"`
-				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPCServer.URL}},
+			Name:       "Server1",
+			Connection: ConnectionConfig{HTTP: HTTPConnection{URL: fakeRPCServer.URL}},
 		},
 	}
 
@@ -516,21 +451,8 @@ func TestTronProxyURLRedirection(t *testing.T) {
 	rpcGatewayConfig.ChainType = "tron"
 	rpcGatewayConfig.Targets = []NodeProviderConfig{
 		{
-			Name: "Server1",
-			Connection: struct {
-				HTTP struct {
-					URL     string            `yaml:"url"`
-					Headers map[string]string `yaml:"headers"`
-				} `yaml:"http"`
-				WebSocket struct {
-					URL string `yaml:"url"`
-				} `yaml:"websocket"`
-			}{HTTP: struct {
-				URL     string            `yaml:"url"`
-				Headers map[string]string `yaml:"headers"`
-			}{URL: fakeRPCServer.URL, Headers: map[string]string{"TRON-PRO-API-KEY": "test-api-key"}}, WebSocket: struct {
-				URL string `yaml:"url"`
-			}{URL: ""}},
+			Name:       "Server1",
+			Connection: ConnectionConfig{HTTP: HTTPConnection{URL: fakeRPCServer.URL, Headers: map[string]string{"TRON-PRO-API-KEY": "test-api-key"}}, WebSocket: WebSocketConnection{URL: ""}},
 		},
 	}
 	rpcGatewayConfig.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -585,42 +507,16 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		config.Targets = []NodeProviderConfig{
 			{
 				Name: "Provider1",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{URL: "", Headers: nil}, // Empty URL means no health checker
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP:      HTTPConnection{URL: "", Headers: nil}, // Empty URL means no health checker
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 			{
 				Name: "Provider2",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{URL: "", Headers: nil}, // Empty URL means no health checker
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP:      HTTPConnection{URL: "", Headers: nil}, // Empty URL means no health checker
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 		}
@@ -657,42 +553,16 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		config.Targets = []NodeProviderConfig{
 			{
 				Name: "Provider1",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{URL: failingServer.URL, Headers: nil},
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP:      HTTPConnection{URL: failingServer.URL, Headers: nil},
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 			{
 				Name: "Provider2",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{URL: failingServer.URL, Headers: nil},
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP:      HTTPConnection{URL: failingServer.URL, Headers: nil},
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 		}
@@ -787,42 +657,16 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		config.Targets = []NodeProviderConfig{
 			{
 				Name: "Provider1",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{URL: server1.URL, Headers: nil},
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP:      HTTPConnection{URL: server1.URL, Headers: nil},
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 			{
 				Name: "Provider2",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{URL: server2.URL, Headers: nil},
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP:      HTTPConnection{URL: server2.URL, Headers: nil},
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 		}
@@ -875,42 +719,16 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		config.Targets = []NodeProviderConfig{
 			{
 				Name: "Provider1",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{URL: "", Headers: nil}, // No health checker
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP:      HTTPConnection{URL: "", Headers: nil}, // No health checker
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 			{
 				Name: "Provider2",
-				Connection: struct {
-					HTTP struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					} `yaml:"http"`
-					WebSocket struct {
-						URL string `yaml:"url"`
-					} `yaml:"websocket"`
-				}{
-					HTTP: struct {
-						URL     string            `yaml:"url"`
-						Headers map[string]string `yaml:"headers"`
-					}{URL: failingServer.URL, Headers: nil}, // Will be tainted
-					WebSocket: struct {
-						URL string `yaml:"url"`
-					}{URL: ""},
+				Connection: ConnectionConfig{
+					HTTP:      HTTPConnection{URL: failingServer.URL, Headers: nil}, // Will be tainted
+					WebSocket: WebSocketConnection{URL: ""},
 				},
 			},
 		}
