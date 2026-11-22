@@ -284,7 +284,8 @@ func wsBurst(ctx context.Context, item urlItem, timeout time.Duration) (string, 
 func httpProbe(ctx context.Context, item urlItem, client *http.Client) (string, []string, error) {
 	switch item.ChainType {
 	case "tron":
-		st, d, raw, err := postJSON(ctx, client, strings.TrimRight(item.URL, "/")+"/wallet/getnowblock", item.Headers, []byte("{}"))
+		// Header only, as the gateway's health check asks for it
+		st, d, raw, err := postJSON(ctx, client, strings.TrimRight(item.URL, "/")+"/wallet/getblock", item.Headers, []byte(`{"detail":false}`))
 		if err != nil {
 			return "", nil, err
 		}
@@ -434,7 +435,7 @@ func main() {
   evm HTTP  %d× concurrent eth_blockNumber (WARN if any blocked) + eth_getTransactionReceipt + eth_getLogs
   evm WS    %d× concurrent dial+eth_blockNumber (WARN if any blocked) + eth_subscribe(newHeads) + eth_getTransactionReceipt
   solana    HTTP getHealth / WS slotSubscribe
-  tron      HTTP /wallet/getnowblock
+  tron      HTTP /wallet/getblock {"detail":false}
 `, burstN, burstN)
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: check-rpc [flags] [config.yml]\n\nDefault: %s\n\n%s", defaultCfg, probesHelp)

@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -323,7 +324,7 @@ func (h *HealthChecker) blockCheckMethod() string {
 	case h.config.ChainType == "solana":
 		return "getSlot"
 	case h.config.ChainType == "tron":
-		return "wallet/getnowblock"
+		return "wallet/getblock"
 	}
 	return "eth_blockNumber"
 }
@@ -399,12 +400,15 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 			} `json:"block_header"`
 		}
 
-		// Create a POST request with empty body
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.URL+"/wallet/getnowblock", nil)
+		// Latest block header only: getnowblock returns the whole block with
+		// its transactions (~275 KB), slow enough to time out over long paths
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.URL+"/wallet/getblock", strings.NewReader(`{"detail":false}`))
 		if err != nil {
 			return sample, fmt.Errorf("failed to create request: %w", err)
 		}
 
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", userAgent)
 		// Add custom headers if configured
 		for key, value := range h.config.Headers {
 			req.Header.Set(key, value)
@@ -426,6 +430,10 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 			return sample, fmt.Errorf("failed to decode response: %w", err)
 		}
 
+		// A node that doesn't know the request may answer {}: no block, not block 0
+		if response.BlockHeader.RawData.Number == 0 {
+			return sample, errors.New("no block number in response")
+		}
 		sample = blockSample{block: response.BlockHeader.RawData.Number, at: time.Now()}
 
 	default:

@@ -289,7 +289,7 @@ func TestHealthCheckTaintDetailNamesTheRealRequest(t *testing.T) {
 	}{
 		{"solana", "websocket", wsURL, "slotSubscribe: websocket: bad handshake (HTTP 403)"},
 		{"solana", "http", forbidden.URL, "getSlot: "},
-		{"tron", "http", forbidden.URL, "wallet/getnowblock: "},
+		{"tron", "http", forbidden.URL, "wallet/getblock: "},
 		{"evm", "http", forbidden.URL, "eth_blockNumber: "},
 		{"evm", "websocket", wsURL, "eth_blockNumber: websocket: bad handshake (HTTP 403)"},
 	} {
@@ -533,6 +533,38 @@ func TestHealthCheck429GetsRateLimitTaint(t *testing.T) {
 			defer hc.mu.Unlock()
 			assert.True(t, hc.taint.cfg.Probe, "rate-limit taint")
 			assert.Equal(t, 7*time.Second, hc.taint.waitTime, "Retry-After honoured")
+		})
+	}
+}
+
+// The Tron check asks for the latest block header only, and a response
+// without a block number fails instead of recording block 0.
+func TestTronCheckFetchesHeaderOnly(t *testing.T) {
+	for name, tc := range map[string]struct {
+		reply string
+		ok    bool
+	}{
+		"header": {`{"blockID":"00","block_header":{"raw_data":{"number":88236685}}}`, true},
+		"empty":  {`{}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var path, body string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				path, body = r.URL.Path, string(b)
+				_, _ = w.Write([]byte(tc.reply))
+			}))
+			t.Cleanup(srv.Close)
+			hc := NewHealthChecker(HealthCheckerConfig{Logger: quietLogger, URL: srv.URL, Name: "p", Path: t.Name(), Timeout: time.Second, ChainType: "tron"})
+			t.Cleanup(hc.Stop)
+			hc.CheckAndSetHealth()
+
+			assert.Equal(t, "/wallet/getblock", path)
+			assert.JSONEq(t, `{"detail":false}`, body)
+			assert.Equal(t, !tc.ok, hc.IsTainted())
+			if tc.ok {
+				assert.Equal(t, uint64(88236685), hc.BlockNumber())
+			}
 		})
 	}
 }
