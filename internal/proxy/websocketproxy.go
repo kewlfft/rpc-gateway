@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bytes"
+	"context"
+	"encoding/json/jsontext"
 	"io"
 	"log/slog"
 	"maps"
@@ -72,10 +74,9 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer targetConn.Close()
 
-	// Track subscriptions for this specific connection
-	connectionSubscriptions := make(map[string]bool)
-	// Track pending subscription request IDs to identify subscription responses
-	pendingSubscriptionRequests := make(map[any]bool)
+	// Subscriptions of this client connection; shared by both pipe goroutines
+	subs := newConnSubscriptions()
+	debugEnabled := p.logger.Enabled(context.Background(), slog.LevelDebug)
 
 	// Buffer of 3 to handle errors from 2 pipes + ping goroutine without blocking
 	errCh := make(chan upstreamCloseInfo, 3)
@@ -83,7 +84,7 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	closeAll := func(isGracefulClose bool) {
 		once.Do(func() {
 			// Clean up subscriptions for this connection
-			p.cleanupConnectionSubscriptions(connectionSubscriptions)
+			p.cleanupConnectionSubscriptions(subs)
 			// If upstream closed gracefully, forward close frame to client
 			if isGracefulClose {
 				deadline := time.Now().Add(2 * time.Second)
@@ -95,69 +96,90 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	pipe := func(src, dst *websocket.Conn, direction string) {
+	fail := func(direction, what string, err error) {
+		p.logger.Debug(direction+" "+what+" error",
+			"error", err,
+			"target_url", p.targetURL)
+		errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
+	}
+
+	// client->target: client requests are small, so read each one whole and record
+	// subscription requests BEFORE forwarding, so the upstream reply can never be
+	// processed before its request is known.
+	clientToTarget := func() {
+		const direction = "client->target"
 		for {
-			mt, reader, err := src.NextReader()
+			mt, msg, err := clientConn.ReadMessage()
 			if err != nil {
-				// Check if this is a graceful close from upstream
-				isGracefulClose := direction == "target->client" && websocket.IsCloseError(err)
+				p.logger.Debug(direction+" read error",
+					"error", err,
+					"target_url", p.targetURL,
+					"is_close", false)
+				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
+				return
+			}
+			p.trackSubscriptionFromMessage(msg, subs)
+			if err := targetConn.WriteMessage(mt, msg); err != nil {
+				fail(direction, "write", err)
+				return
+			}
+		}
+	}
+
+	// target->client: stream every message; only parse it when it can matter
+	// (a subscription reply is pending, or debug logging of upstream errors is on).
+	targetToClient := func() {
+		const direction = "target->client"
+		var buf bytes.Buffer
+		for {
+			mt, reader, err := targetConn.NextReader()
+			if err != nil {
+				// A close frame from upstream is a graceful close
+				isGracefulClose := websocket.IsCloseError(err)
 				p.logger.Debug(direction+" read error",
 					"error", err,
 					"target_url", p.targetURL,
 					"is_close", isGracefulClose)
-				// Send error info (non-blocking - channel has sufficient buffer)
 				errCh <- upstreamCloseInfo{err: err, isGracefulClose: isGracefulClose}
 				return
 			}
 
-			// Get writer first to start forwarding immediately
-			writer, err := dst.NextWriter(mt)
+			writer, err := clientConn.NextWriter(mt)
 			if err != nil {
-				p.logger.Debug(direction+" write error",
-					"error", err,
-					"target_url", p.targetURL)
-				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
+				fail(direction, "write", err)
 				return
 			}
 
-			// Buffer for parsing while forwarding
-			var buf bytes.Buffer
-			teeReader := io.TeeReader(reader, &buf)
-
-			// Forward immediately while also buffering
-			if _, err = io.Copy(writer, teeReader); err != nil {
+			parse := debugEnabled || subs.hasPending()
+			src := reader
+			if parse {
+				buf.Reset()
+				src = io.TeeReader(reader, &buf)
+			}
+			if _, err = io.Copy(writer, src); err != nil {
 				writer.Close()
-				p.logger.Debug(direction+" copy error",
-					"error", err,
-					"target_url", p.targetURL)
-				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
+				fail(direction, "copy", err)
 				return
 			}
 			if err = writer.Close(); err != nil {
-				p.logger.Debug(direction+" close error",
-					"error", err,
-					"target_url", p.targetURL)
-				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}
+				fail(direction, "close", err)
 				return
 			}
 
-			// Parse from buffer (non-blocking for next message)
-			msgBytes := buf.Bytes()
-			if direction == "client->target" {
-				p.trackSubscriptionFromMessage(msgBytes, connectionSubscriptions, pendingSubscriptionRequests)
-			} else if direction == "target->client" {
-				// Parse once and reuse for both tracking and error logging
-				var msg map[string]any
-				if err := jsonv2.Unmarshal(msgBytes, &msg); err == nil {
-					p.trackSubscriptionResponse(msg, connectionSubscriptions, pendingSubscriptionRequests)
-					p.logJSONRPCError(msg)
+			if parse {
+				var msg wsMessage
+				if jsonv2.Unmarshal(buf.Bytes(), &msg) == nil {
+					p.trackSubscriptionResponse(&msg, subs)
+					if debugEnabled {
+						p.logJSONRPCError(msg.Error)
+					}
 				}
 			}
 		}
 	}
 
-	go pipe(clientConn, targetConn, "client->target")
-	go pipe(targetConn, clientConn, "target->client")
+	go clientToTarget()
+	go targetToClient()
 
 	// Periodic ping to keep the connection alive
 	ticker := time.NewTicker(pingInterval)
@@ -251,90 +273,118 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[any]bool) {
-	// Parse JSON-RPC message
-	var msg map[string]any
-	if err := jsonv2.Unmarshal(msgBytes, &msg); err != nil {
-		return // Not a valid JSON message
+// wsMessage holds the JSON-RPC fields needed for subscription tracking.
+// Other members (e.g. large notification payloads) are skipped, not decoded.
+type wsMessage struct {
+	ID     any            `json:"id"`
+	Method string         `json:"method"`
+	Params jsontext.Value `json:"params"`
+	Result jsontext.Value `json:"result"`
+	Error  jsontext.Value `json:"error"`
+}
+
+// connSubscriptions tracks the subscriptions of one client connection.
+type connSubscriptions struct {
+	mu      sync.Mutex
+	active  map[string]bool // subscription IDs owned by this connection
+	pending map[any]bool    // IDs of subscribe requests awaiting a reply
+}
+
+func newConnSubscriptions() *connSubscriptions {
+	return &connSubscriptions{active: make(map[string]bool), pending: make(map[any]bool)}
+}
+
+func (c *connSubscriptions) hasPending() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.pending) > 0
+}
+
+func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, subs *connSubscriptions) {
+	var msg wsMessage
+	if err := jsonv2.Unmarshal(msgBytes, &msg); err != nil || msg.Method == "" {
+		return // Not a valid JSON-RPC request
 	}
 
-	method, ok := msg["method"].(string)
-	if !ok {
-		return // No method field
-	}
-
-	// Check if this is a subscription request
-	if method == "eth_subscribe" || method == "shh_subscribe" || method == "net_subscribe" {
+	switch msg.Method {
+	case "eth_subscribe", "shh_subscribe", "net_subscribe":
 		// Track the request ID so we can identify the subscription response
-		if requestID, ok := msg["id"]; ok && requestID != nil {
-			pendingSubscriptionRequests[requestID] = true
-			p.logger.Debug("subscription request detected", "method", method, "id", requestID)
+		if msg.ID != nil {
+			subs.mu.Lock()
+			subs.pending[msg.ID] = true
+			subs.mu.Unlock()
+			p.logger.Debug("subscription request detected", "method", msg.Method, "id", msg.ID)
 		}
-	}
-
-	// Check if this is an unsubscribe request
-	if method == "eth_unsubscribe" || method == "shh_unsubscribe" || method == "net_unsubscribe" {
-		if params, ok := msg["params"].([]any); ok && len(params) > 0 {
+	case "eth_unsubscribe", "shh_unsubscribe", "net_unsubscribe":
+		var params []any
+		if jsonv2.Unmarshal(msg.Params, &params) == nil && len(params) > 0 {
 			if subID, ok := params[0].(string); ok {
 				// Remove from both connection-specific and global maps
-				delete(connectionSubscriptions, subID)
+				subs.mu.Lock()
+				delete(subs.active, subID)
+				subs.mu.Unlock()
 				p.RemoveSubscription(subID)
 			}
 		}
 	}
 }
 
-func (p *WebSocketProxy) trackSubscriptionResponse(msg map[string]any, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[any]bool) {
+func (p *WebSocketProxy) trackSubscriptionResponse(msg *wsMessage, subs *connSubscriptions) {
 	// Only track subscription IDs if this response corresponds to a pending subscription request
-	requestID, hasID := msg["id"]
-	if !hasID || !pendingSubscriptionRequests[requestID] {
+	subs.mu.Lock()
+	if msg.ID == nil || !subs.pending[msg.ID] {
+		subs.mu.Unlock()
 		return // Not a subscription response
 	}
+	delete(subs.pending, msg.ID)
 
-	// Remove from pending requests
-	delete(pendingSubscriptionRequests, requestID)
-
-	// Check if this is a response with a result (subscription ID)
-	if result, ok := msg["result"]; ok {
-		if subID, ok := result.(string); ok {
-			// Track in both connection-specific and global maps
-			connectionSubscriptions[subID] = true
-			p.TrackSubscription(subID)
-			p.logger.Debug("subscription ID tracked from response", "subID", subID)
-		}
+	var subID string
+	if msg.Result.Kind() != '"' || jsonv2.Unmarshal(msg.Result, &subID) != nil {
+		subs.mu.Unlock()
+		return // No subscription ID (e.g. error response)
 	}
+	subs.active[subID] = true
+	subs.mu.Unlock()
+
+	p.TrackSubscription(subID)
+	p.logger.Debug("subscription ID tracked from response", "subID", subID)
 }
 
-// logJSONRPCError logs JSON-RPC error responses from upstream providers
-func (p *WebSocketProxy) logJSONRPCError(msg map[string]any) {
-	// Check if this is a JSON-RPC error response
-	if errObj, ok := msg["error"].(map[string]any); ok {
-		code, _ := errObj["code"].(float64)
-		message, _ := errObj["message"].(string)
-
-		p.logger.Debug("JSON-RPC error from upstream provider",
-			"target_url", p.targetURL,
-			"error_code", int(code),
-			"error_message", message)
+// logJSONRPCError logs JSON-RPC error responses from upstream providers (debug only)
+func (p *WebSocketProxy) logJSONRPCError(rawErr jsontext.Value) {
+	if rawErr.Kind() != '{' {
+		return
 	}
+	var errObj map[string]any
+	if jsonv2.Unmarshal(rawErr, &errObj) != nil || errObj == nil {
+		return
+	}
+	code, _ := errObj["code"].(float64)
+	message, _ := errObj["message"].(string)
+	p.logger.Debug("JSON-RPC error from upstream provider",
+		"target_url", p.targetURL,
+		"error_code", int(code),
+		"error_message", message)
 }
 
 // cleanupConnectionSubscriptions removes subscriptions for a specific connection
-func (p *WebSocketProxy) cleanupConnectionSubscriptions(connectionSubscriptions map[string]bool) {
-	if len(connectionSubscriptions) == 0 {
+func (p *WebSocketProxy) cleanupConnectionSubscriptions(subs *connSubscriptions) {
+	subs.mu.Lock()
+	defer subs.mu.Unlock()
+	if len(subs.active) == 0 {
 		return
 	}
 
-	p.logger.Debug("cleaning up connection subscriptions", "count", len(connectionSubscriptions))
+	p.logger.Debug("cleaning up connection subscriptions", "count", len(subs.active))
 
 	// Remove from global map
 	p.mu.Lock()
-	for subID := range connectionSubscriptions {
+	for subID := range subs.active {
 		delete(p.subscriptions, subID)
 	}
 	p.mu.Unlock()
 
-	clear(connectionSubscriptions)
+	clear(subs.active)
 }
 
 // getConnection gets a connection from the pool or creates a new one

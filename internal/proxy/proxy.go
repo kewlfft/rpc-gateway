@@ -189,6 +189,10 @@ func (p *Proxy) handleProviderFailure(target *NodeProvider, r *http.Request, sta
 func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, start time.Time) {
 	duration := p.recordMetrics(r.Method, name, "success", start)
 
+	// Hot path: skip building log attributes unless debug is enabled
+	if !p.logger.Enabled(r.Context(), slog.LevelDebug) {
+		return
+	}
 	p.logger.Debug("request handled",
 		"provider", name,
 		"status", status,
@@ -305,8 +309,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var bodyBytes []byte
 	if !isWebSocket {
 		var err error
-		bodyBytes, err = io.ReadAll(r.Body)
-		r.Body.Close()
+		bodyBytes, err = readBody(r)
 		if err != nil {
 			p.logger.Error("failed to read request body",
 				"error", err,
@@ -368,6 +371,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	providerDetails := p.collectProviderDetails(connType)
 	rpcerrors.WriteJSONRPCError(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
 }
+
+// readBody reads and closes the request body, sizing the buffer from
+// Content-Length when known to avoid repeated growth.
+func readBody(r *http.Request) ([]byte, error) {
+	defer r.Body.Close()
+	if n := r.ContentLength; n > 0 && n <= maxPresizedBody {
+		// net/http caps the body at Content-Length, so an exact-size read suffices
+		buf := make([]byte, n)
+		if _, err := io.ReadFull(r.Body, buf); err != nil {
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+		return buf, nil
+	}
+	return io.ReadAll(r.Body)
+}
+
+// maxPresizedBody caps the Content-Length we trust for pre-allocation.
+const maxPresizedBody = 1 << 20
 
 // GetHealthCheckManager returns the health check manager for this proxy
 func (p *Proxy) GetHealthCheckManager() *HealthCheckManager {
