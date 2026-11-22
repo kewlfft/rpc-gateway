@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -143,14 +144,12 @@ type HealthCheckerConfig struct {
 // BlockNumberUpdateCallback is called after a health checker records a new block sample
 type BlockNumberUpdateCallback func()
 
-// blockSample is a block number, the chain ID reported with it (EVM only,
-// 0 otherwise) and when the block number was received.
+// blockSample is a block number and when it was received.
 type blockSample struct {
-	block   uint64
-	chainID uint64
-	at      time.Time
-	rate    float64 // blocks/s from this endpoint's earlier samples, if rateOK
-	rateOK  bool
+	block  uint64
+	at     time.Time
+	rate   float64 // blocks/s from this endpoint's earlier samples, if rateOK
+	rateOK bool
 }
 
 // minRateSpan is the history an endpoint's block rate is measured over.
@@ -173,7 +172,7 @@ type HealthChecker struct {
 	config              HealthCheckerConfig
 	httpClient          *http.Client
 	sample              atomic.Pointer[blockSample] // latest block number; nil until the first check
-	chainID             atomic.Uint64               // EVM chain ID, fetched once (0 = not yet)
+	network             atomic.Pointer[string]      // network fingerprint, fetched once; nil = not yet (see Network)
 	ethCallCheckCounter atomic.Uint32
 	mu                  sync.Mutex // Only for taint state
 	isTainted           atomic.Bool
@@ -259,44 +258,70 @@ func (h *HealthChecker) checkSolanaSlotViaWebSocket(conn *websocket.Conn) (uint6
 	return uint64(slot), nil
 }
 
-// wsCall sends one JSON-RPC request on conn and returns its hex result as uint64.
-func wsCall(conn *websocket.Conn, id int, method string) (uint64, error) {
+// Network returns the endpoint's network fingerprint: the chain ID on EVM, the
+// genesis hash on Solana, the hash of block 0 on Tron; "" until fetched.
+func (h *HealthChecker) Network() string {
+	if n := h.network.Load(); n != nil {
+		return *n
+	}
+	return ""
+}
+
+func (h *HealthChecker) setNetwork(n string) {
+	h.network.Store(&n)
+}
+
+// wsCallString sends one JSON-RPC request without params on conn and returns
+// its string result, which must not be empty.
+func wsCallString(conn *websocket.Conn, id int, method string) (string, error) {
 	if err := conn.WriteJSON(jsonRPCRequest[[]any]{"2.0", id, method, []any{}}); err != nil {
-		return 0, fmt.Errorf("%s request failed: %w", method, err)
+		return "", fmt.Errorf("%s request failed: %w", method, err)
 	}
 	var resp struct {
 		Result string        `json:"result"`
 		Error  *JSONRPCError `json:"error"`
 	}
 	if err := conn.ReadJSON(&resp); err != nil {
-		return 0, fmt.Errorf("%s response failed: %w", method, err)
+		return "", fmt.Errorf("%s response failed: %w", method, err)
 	}
 	if resp.Error != nil {
-		return 0, fmt.Errorf("%s RPC error: %s", method, resp.Error.Message)
+		return "", fmt.Errorf("%s RPC error: %s", method, resp.Error.Message)
 	}
-	v, err := parseHex(resp.Result)
+	if resp.Result == "" {
+		return "", fmt.Errorf("%s: empty result", method)
+	}
+	return resp.Result, nil
+}
+
+// wsCall is wsCallString for a hex quantity result.
+func wsCall(conn *websocket.Conn, id int, method string) (uint64, error) {
+	result, err := wsCallString(conn, id, method)
 	if err != nil {
-		return 0, fmt.Errorf("%s: invalid result %q: %w", method, resp.Result, err)
+		return 0, err
+	}
+	v, err := parseHex(result)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid result %q: %w", method, result, err)
 	}
 	return v, nil
 }
 
 // checkEVMBlockNumberViaWebSocket fetches the block number, and the chain ID
 // on the same connection when asked
-func (h *HealthChecker) checkEVMBlockNumberViaWebSocket(conn *websocket.Conn, withChainID bool) (blockSample, error) {
+func (h *HealthChecker) checkEVMBlockNumberViaWebSocket(conn *websocket.Conn, withNetwork bool) (blockSample, error) {
 	block, err := wsCall(conn, 1, "eth_blockNumber")
 	if err != nil {
 		return blockSample{}, err
 	}
 	at := time.Now()
-	if withChainID {
+	if withNetwork {
 		id, err := wsCall(conn, 2, "eth_chainId")
 		if err != nil {
 			return blockSample{}, err
 		}
-		h.chainID.Store(id)
+		h.setNetwork(strconv.FormatUint(id, 10))
 	}
-	return blockSample{block: block, chainID: h.chainID.Load(), at: at}, nil
+	return blockSample{block: block, at: at}, nil
 }
 
 // fetchHexResult makes an HTTP JSON-RPC call without params and parses its hex result.
@@ -331,9 +356,10 @@ func (h *HealthChecker) blockCheckMethod() string {
 
 // checkBlockNumber fetches the endpoint's latest block. On EVM the sample
 // carries the endpoint's chain ID, which is a constant: it is requested only
-// when withChainID is set or it is not known yet, to spare rate limits.
-func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) (blockSample, error) {
-	withChainID = withChainID || h.chainID.Load() == 0
+// when withNetwork is set or it is not known yet, to spare rate limits. The
+// same goes for the other chains' network fingerprint (see Network).
+func (h *HealthChecker) checkBlockNumber(ctx context.Context, withNetwork bool) (blockSample, error) {
+	withNetwork = withNetwork || h.Network() == ""
 	var sample blockSample
 
 	switch {
@@ -367,10 +393,18 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 		conn.SetReadDeadline(deadline)
 
 		if h.config.ChainType == "solana" {
+			// Genesis hash first: no subscription notifications to skip yet
+			if withNetwork {
+				genesis, err := wsCallString(conn, 3, "getGenesisHash")
+				if err != nil {
+					return blockSample{}, err
+				}
+				h.setNetwork(genesis)
+			}
 			sample.block, err = h.checkSolanaSlotViaWebSocket(conn)
 			sample.at = time.Now()
 		} else {
-			sample, err = h.checkEVMBlockNumberViaWebSocket(conn, withChainID)
+			sample, err = h.checkEVMBlockNumberViaWebSocket(conn, withNetwork)
 		}
 		if err != nil {
 			return blockSample{}, err
@@ -389,6 +423,17 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 			return sample, fmt.Errorf("invalid result type for getSlot")
 		}
 		sample = blockSample{block: uint64(result), at: time.Now()}
+		if withNetwork {
+			rpcResp, err := h.makeJSONRPCCall(ctx, "getGenesisHash", []any{})
+			if err != nil {
+				return sample, err
+			}
+			genesis, _ := rpcResp.Result.(string)
+			if genesis == "" {
+				return sample, errors.New("invalid result for getGenesisHash")
+			}
+			h.setNetwork(genesis)
+		}
 
 	case h.config.ChainType == "tron":
 		var response struct {
@@ -435,6 +480,13 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 			return sample, errors.New("no block number in response")
 		}
 		sample = blockSample{block: response.BlockHeader.RawData.Number, at: time.Now()}
+		if withNetwork {
+			genesis, err := h.tronGenesisHash(ctx)
+			if err != nil {
+				return sample, err
+			}
+			h.setNetwork(genesis)
+		}
 
 	default:
 		block, err := h.fetchHexResult(ctx, "eth_blockNumber")
@@ -442,14 +494,14 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 			return sample, err
 		}
 		at := time.Now()
-		if withChainID {
+		if withNetwork {
 			id, err := h.fetchHexResult(ctx, "eth_chainId")
 			if err != nil {
 				return sample, err
 			}
-			h.chainID.Store(id)
+			h.setNetwork(strconv.FormatUint(id, 10))
 		}
-		sample = blockSample{block: block, chainID: h.chainID.Load(), at: at}
+		sample = blockSample{block: block, at: at}
 	}
 
 	// Common debug log
@@ -457,10 +509,42 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) 
 		"connectionType", h.config.ConnectionType,
 		"provider", h.config.Name,
 		"blockNumber", sample.block,
-		"chainId", sample.chainID,
+		"network", h.Network(),
 		"path", h.config.Path)
 
 	return sample, nil
+}
+
+// tronGenesisHash returns the hash of block 0, which tells Tron mainnet from
+// its testnets (Nile, Shasta).
+func (h *HealthChecker) tronGenesisHash(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.URL+"/wallet/getblockbynum", strings.NewReader(`{"num":0}`))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+	for key, value := range h.config.Headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("getblockbynum 0: failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("getblockbynum 0: %w", statusError(resp))
+	}
+	var block struct {
+		BlockID string `json:"blockID"`
+	}
+	if err := jsonv2.UnmarshalRead(resp.Body, &block); err != nil {
+		return "", fmt.Errorf("getblockbynum 0: failed to decode response: %w", err)
+	}
+	if block.BlockID == "" {
+		return "", errors.New("getblockbynum 0: no blockID in response")
+	}
+	return block.BlockID, nil
 }
 
 // checkEthCall performs an `eth_call` against the SHA-256 precompile (0x02) to
@@ -489,7 +573,8 @@ func (h *HealthChecker) checkEthCall(c context.Context) error {
 
 // CheckAndSetHealth makes the following calls
 //   - `eth_blockNumber` - latest block, judged by the manager's gates; on EVM
-//     `eth_chainId` too, but only on the first check and when recovering
+//     its network fingerprint too (chain ID; genesis hash on Solana and
+//     Tron), but only on the first check and when recovering
 //   - `eth_call` - SHA-256 precompile probe (runs sequentially after block number check)
 //
 // And sets the health status based on the responses.

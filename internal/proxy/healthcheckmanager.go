@@ -124,7 +124,7 @@ func (h *HealthCheckManager) checkBlockLag(now time.Time) {
 	h.lagMu.Lock()
 	defer h.lagMu.Unlock()
 
-	if h.checkChainIDs() {
+	if h.checkNetworks() {
 		return // blocks of different chains can't be compared
 	}
 	window := h.timeout + time.Second // covers one cycle: 500 ms WS stagger + response time
@@ -165,45 +165,53 @@ func (h *HealthCheckManager) checkBlockLag(now time.Time) {
 	}
 }
 
-// checkChainIDs compares the chain IDs the path's EVM endpoints report (a
-// misconfigured URL serves another chain). Endpoints off the chain reported by
-// a strict majority of those known are excluded; this is recomputed on every
+// checkNetworks compares the network fingerprints the path's endpoints report
+// (chain ID; genesis hash on Solana and Tron), catching a misconfigured URL
+// that serves another chain or a testnet. Each provider votes once for each
+// network its endpoints report, so a provider with both HTTP and WebSocket
+// doesn't outweigh one with HTTP only. Endpoints off the network reported by
+// a strict majority of providers are excluded; this is recomputed on every
 // update, so an early vote at startup corrects itself as endpoints answer.
 // With no majority, rather than guess which is wrong, the path is not served
 // until the wrong URL is removed from the config: it returns true then.
 // Caller holds lagMu.
-func (h *HealthCheckManager) checkChainIDs() bool {
-	counts := make(map[uint64]int, 2)
-	known := 0
+func (h *HealthCheckManager) checkNetworks() bool {
+	voters := make(map[string]map[string]bool, 2) // network -> providers reporting it
+	providers := make(map[string]bool, len(h.checkers))
 	for _, c := range h.checkers {
-		if id := c.chainID.Load(); id != 0 { // 0: not fetched yet, or not EVM
-			counts[id]++
-			known++
+		n := c.Network()
+		if n == "" { // not fetched yet
+			continue
+		}
+		providers[c.config.Name] = true
+		if voters[n] == nil {
+			voters[n] = make(map[string]bool, len(h.checkers))
+		}
+		voters[n][c.config.Name] = true
+	}
+	var majority string
+	for n, ps := range voters {
+		if len(ps)*2 > len(providers) {
+			majority = n
 		}
 	}
-	var majority uint64
-	for id, n := range counts {
-		if n*2 > known {
-			majority = id
-		}
-	}
-	conflict := majority == 0 && len(counts) > 1
+	conflict := majority == "" && len(voters) > 1
 
 	for _, c := range h.checkers {
-		id := c.chainID.Load()
-		wrong := majority != 0 && id != 0 && id != majority
+		n := c.Network()
+		wrong := majority != "" && n != "" && n != majority
 		if wrong != c.wrongChain.Load() {
 			c.wrongChain.Store(wrong)
 			if wrong {
-				h.logger.Warn("provider on another chain excluded: remove its URL from the config",
+				h.logger.Warn("provider on another network excluded: remove its URL from the config",
 					"path", h.path, "name", c.config.Name, "conn", c.config.ConnectionType,
-					"chainId", id, "majorityChainId", majority)
+					"network", n, "majorityNetwork", majority)
 				if c.onUnhealthy != nil {
 					c.onUnhealthy()
 				}
 			} else {
-				h.logger.Info("provider back on the path's chain", "path", h.path,
-					"name", c.config.Name, "conn", c.config.ConnectionType, "chainId", id)
+				h.logger.Info("provider back on the path's network", "path", h.path,
+					"name", c.config.Name, "conn", c.config.ConnectionType, "network", n)
 			}
 		}
 	}
@@ -211,22 +219,23 @@ func (h *HealthCheckManager) checkChainIDs() bool {
 	if conflict != h.chainConflict.Load() {
 		h.chainConflict.Store(conflict)
 		if conflict {
-			ids := make([]string, 0, len(h.checkers))
+			ns := make([]string, 0, len(h.checkers))
 			for _, c := range h.checkers {
-				if id := c.chainID.Load(); id != 0 {
-					ids = append(ids, fmt.Sprintf("%s/%s=%d", c.config.Name, c.config.ConnectionType, id))
+				if n := c.Network(); n != "" {
+					ns = append(ns, fmt.Sprintf("%s/%s=%s", c.config.Name, c.config.ConnectionType, n))
 				}
 			}
-			h.logger.Error("providers report different chain IDs with no majority: not serving this path until the wrong URL is removed from the config",
-				"path", h.path, "chainIds", ids)
+			h.logger.Error("providers report different networks with no majority: not serving this path until the wrong URL is removed from the config",
+				"path", h.path, "networks", ns)
 		} else {
-			h.logger.Info("providers' chain IDs settled: serving this path", "path", h.path)
+			h.logger.Info("providers' networks settled: serving this path", "path", h.path)
 		}
 	}
 	return conflict
 }
 
-// ChainConflict reports whether the path's endpoints disagree on the chain ID.
+// ChainConflict reports whether the path's providers disagree on the network
+// with no majority.
 func (h *HealthCheckManager) ChainConflict() bool {
 	return h.chainConflict.Load()
 }

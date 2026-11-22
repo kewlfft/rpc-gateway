@@ -241,7 +241,7 @@ func TestChainIDConflictStopsThePath(t *testing.T) {
 
 	rr := postRPC(p, "/", nil)
 	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
-	assert.Contains(t, rr.Body.String(), "different chain IDs")
+	assert.Contains(t, rr.Body.String(), "different networks")
 	assert.Zero(t, ups["a"].live.Load()+ups["wrong"].live.Load(), "no request forwarded")
 
 	// Endpoints agreeing again (here: the wrong one re-reads its chain ID on
@@ -315,6 +315,71 @@ func TestChainIDMajorityCorrectsEarlyStartupVote(t *testing.T) {
 	assert.False(t, healthy("w2"))
 }
 
+// Votes count per provider: one wrong provider with both HTTP and WebSocket
+// must not tie two correct HTTP-only providers (which would stop the path).
+func TestNetworkVotesCountPerProvider(t *testing.T) {
+	config := createConfig()
+	config.Path = t.Name()
+	config.Logger = quietLogger
+	config.Targets = []NodeProviderConfig{
+		{Name: "wrong", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: "http://w"}, WebSocket: WebSocketConnection{URL: "ws://w"}}},
+		httpTarget("a", "http://a"), httpTarget("b", "http://b"),
+	}
+	hcm, err := NewHealthCheckManager(config)
+	require.NoError(t, err)
+	t.Cleanup(hcm.Stop)
+	hcm.GetHealthChecker("wrong", "http").setNetwork("56")
+	hcm.GetHealthChecker("wrong", "websocket").setNetwork("56")
+	hcm.GetHealthChecker("a", "http").setNetwork("1")
+	hcm.GetHealthChecker("b", "http").setNetwork("1")
+
+	hcm.lagMu.Lock()
+	conflict := hcm.checkNetworks()
+	hcm.lagMu.Unlock()
+	assert.False(t, conflict, "2 providers to 1, not 2 endpoints to 2")
+	assert.False(t, hcm.GetHealthChecker("wrong", "http").IsHealthy())
+	assert.False(t, hcm.GetHealthChecker("wrong", "websocket").IsHealthy())
+	assert.True(t, hcm.GetHealthChecker("a", "http").IsHealthy())
+}
+
+// Solana endpoints are fingerprinted by genesis hash, so a devnet URL in a
+// mainnet path is excluded, and its slot never judges the others.
+func TestSolanaDevnetEndpointIsExcluded(t *testing.T) {
+	const mainnet, devnet = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+	solana := func(slot uint64, genesis string) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(body), "getGenesisHash") {
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":%q}`, genesis)
+				return
+			}
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":%d}`, slot)
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	config := createConfig()
+	config.Path = t.Name()
+	config.Logger = quietLogger
+	config.ChainType = "solana"
+	config.HealthChecks.BlockDiffThreshold = 10
+	config.Targets = []NodeProviderConfig{
+		httpTarget("devnet", solana(500_000_000, devnet)), // higher slot than mainnet
+		httpTarget("a", solana(380_000_000, mainnet)),
+		httpTarget("b", solana(380_000_000, mainnet)),
+	}
+	hcm, err := NewHealthCheckManager(config)
+	require.NoError(t, err)
+	t.Cleanup(hcm.Stop)
+	for _, n := range []string{"devnet", "a", "b"} {
+		hcm.GetHealthChecker(n, "http").CheckAndSetHealth()
+	}
+	assert.Equal(t, mainnet, hcm.GetHealthChecker("a", "http").Network())
+	assert.False(t, hcm.GetHealthChecker("devnet", "http").IsHealthy())
+	assert.True(t, hcm.GetHealthChecker("a", "http").IsHealthy(), "the devnet slot must not taint a")
+	assert.True(t, hcm.GetHealthChecker("b", "http").IsHealthy())
+}
+
 // The chain ID is a constant: it is requested on the first check only, and
 // again when a tainted endpoint is rechecked.
 func TestChainIDFetchedOnceAndOnRecovery(t *testing.T) {
@@ -337,7 +402,7 @@ func TestChainIDFetchedOnceAndOnRecovery(t *testing.T) {
 		hc.CheckAndSetHealth()
 	}
 	assert.Equal(t, int32(1), chainCalls.Load())
-	assert.Equal(t, uint64(1), hc.sample.Load().chainID)
+	assert.Equal(t, "1", hc.Network())
 
 	hc.TaintHealthCheck("test")
 	makeDue(hc)

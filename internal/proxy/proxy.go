@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -203,13 +204,29 @@ func (p *Proxy) getConnectionType(r *http.Request) string {
 	return "http"
 }
 
-// handleProviderFailure taints the failed provider and logs the failure
-func (p *Proxy) handleProviderFailure(target *NodeProvider, r *http.Request, start time.Time, statusCode int, err error) {
+// maxSuspectFailures is how many providers a request may time out or get a
+// 5xx on before failover stops: by then the request itself is the likely cause.
+const maxSuspectFailures = 2
+
+// requestState tracks one client request across the providers it is tried on.
+type requestState struct {
+	suspect int // timeouts and 5xx so far: may be caused by the request itself
+}
+
+// handleProviderFailure taints the failed provider and logs the failure.
+// A timeout or 5xx (suspect) may be caused by the request itself, e.g. a
+// heavy trace or eth_call that is slow everywhere: only the first one of a
+// request taints, so one expensive request can't take every provider out.
+// Connection errors say something about the provider and always taint.
+func (p *Proxy) handleProviderFailure(target *NodeProvider, r *http.Request, rs *requestState, suspect bool, start time.Time, statusCode int, err error) {
 	name := target.Name()
 	duration := time.Since(start).Milliseconds()
 
 	connectionType := p.getConnectionType(r)
-	if hc := target.HealthChecker(connectionType); hc != nil {
+	if suspect {
+		rs.suspect++
+	}
+	if hc := target.HealthChecker(connectionType); hc != nil && (!suspect || rs.suspect == 1) {
 		hc.TaintHTTP()
 	}
 
@@ -272,7 +289,7 @@ const (
 // forwardRequest handles both standard and Tron requests with direct streaming
 // header is the client's header without hop-by-hop fields; it must not be modified.
 // If last is set, a client-error response is returned to the client instead of failing over.
-func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header http.Header, body []byte, start time.Time, target *NodeProvider, urlPath string, last bool) forwardResult {
+func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, rs *requestState, header http.Header, body []byte, start time.Time, target *NodeProvider, urlPath string, last bool) forwardResult {
 	name := target.Name()
 
 	// Detached from r.Context(), so a client cancel never looks like a provider failure.
@@ -292,7 +309,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header ht
 			"method", r.Method,
 			"path", r.URL.Path,
 			"provider_url", urlPath)
-		p.handleProviderFailure(target, r, start, http.StatusServiceUnavailable, err)
+		p.handleProviderFailure(target, r, rs, false, start, http.StatusServiceUnavailable, err)
 		return forwardRetry
 	}
 
@@ -322,7 +339,11 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header ht
 	// and redirects are not followed (a 3xx counts as a provider failure).
 	resp, err := p.transport.RoundTrip(req)
 	if err != nil {
-		if errors.Is(context.Cause(ctx), errUpstreamTimeout) {
+		// Our timer, or the transport's ResponseHeaderTimeout (same duration),
+		// whichever fired first
+		var netErr net.Error
+		timedOut := errors.Is(context.Cause(ctx), errUpstreamTimeout) || (errors.As(err, &netErr) && netErr.Timeout())
+		if timedOut {
 			p.logger.Warn("No response headers within timeout",
 				"error", err,
 				"url", urlPath,
@@ -334,7 +355,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header ht
 				"url", urlPath,
 				"method", r.Method)
 		}
-		p.handleProviderFailure(target, r, start, http.StatusServiceUnavailable, err)
+		p.handleProviderFailure(target, r, rs, timedOut, start, http.StatusServiceUnavailable, err)
 		return forwardRetry
 	}
 	defer resp.Body.Close()
@@ -365,7 +386,8 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header ht
 				hc.TaintRateLimited(retryAfter(resp.Header)) // handleProviderFailure's taint is then a no-op
 			}
 		}
-		p.handleProviderFailure(target, r, start, resp.StatusCode, nil)
+		suspect := resp.StatusCode >= 500 // 429 and others are about the provider
+		p.handleProviderFailure(target, r, rs, suspect, start, resp.StatusCode, nil)
 		return forwardRetry
 	}
 
@@ -384,7 +406,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header ht
 			"error", err,
 			"url", urlPath,
 			"method", r.Method)
-		p.handleProviderFailure(target, r, start, resp.StatusCode, err)
+		p.handleProviderFailure(target, r, rs, false, start, resp.StatusCode, err)
 		// Headers are already sent: retrying would corrupt the response
 		p.logger.Warn("Provider failed during streaming, cannot retry to avoid response corruption",
 			"provider", name,
@@ -421,7 +443,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if p.hcm.ChainConflict() {
-		rpcerrors.WriteJSONRPCError(w, r, fmt.Sprintf("Providers for chain %s report different chain IDs; see the gateway log", p.hcm.path), http.StatusServiceUnavailable, bodyBytes)
+		rpcerrors.WriteJSONRPCError(w, r, fmt.Sprintf("Providers for chain %s report different networks (chain ID or genesis hash); see the gateway log", p.hcm.path), http.StatusServiceUnavailable, bodyBytes)
 		return
 	}
 
@@ -448,6 +470,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		header = withoutHopByHop(r.Header)
 	}
 
+	var rs requestState
 	for i, target := range healthyProviders {
 		name := target.Name()
 
@@ -486,8 +509,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		last := i == len(healthyProviders)-1
-		if p.forwardRequest(w, r, header, bodyBytes, start, target, url, last) == forwardDone {
+		if p.forwardRequest(w, r, &rs, header, bodyBytes, start, target, url, last) == forwardDone {
 			return
+		}
+		if rs.suspect >= maxSuspectFailures {
+			p.logger.Warn("request timed out or failed on several providers, not failing over further",
+				"path", p.hcm.path, "providers_failed", i+1, "timeouts_or_5xx", rs.suspect)
+			break
 		}
 	}
 

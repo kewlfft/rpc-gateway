@@ -554,13 +554,13 @@ func TestUnhealthyProviderClosesOpenWebSocketSessions(t *testing.T) {
 			hcm.lagMu.Lock()
 			defer hcm.lagMu.Unlock()
 			for _, c := range hcm.checkers { // p/websocket on chain 56, the two others on 1
-				id := uint64(1)
+				id := "1"
 				if c == hc {
-					id = 56
+					id = "56"
 				}
-				c.chainID.Store(id)
+				c.setNetwork(id)
 			}
-			hcm.checkChainIDs()
+			hcm.checkNetworks()
 		}, true},
 		{"live request failure", func(_ *HealthCheckManager, hc *HealthChecker) { hc.TaintHTTP() }, false},
 		{"rate limited", func(_ *HealthCheckManager, hc *HealthChecker) { hc.TaintRateLimited(time.Minute) }, false},
@@ -600,5 +600,72 @@ func TestUnhealthyProviderClosesOpenWebSocketSessions(t *testing.T) {
 			require.ErrorAs(t, err, &netErr, "session must stay open, got %v", err)
 			assert.True(t, netErr.Timeout())
 		})
+	}
+}
+
+// A request that times out or gets a 5xx on every provider (say a heavy
+// trace) is probably the cause itself: only the first provider is tainted,
+// and failover stops after two such failures.
+func TestExpensiveRequestTaintsOnlyTheFirstProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{"timeout", func(w http.ResponseWriter, r *http.Request) {
+			select { // slower than the proxy timeout
+			case <-time.After(time.Second):
+			case <-r.Context().Done():
+			}
+		}},
+		{"5xx", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits [3]atomic.Int32
+			targets := make([]NodeProviderConfig, 3)
+			for i := range targets {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hits[i].Add(1)
+					tc.handler(w, r)
+				}))
+				t.Cleanup(srv.Close)
+				targets[i] = httpTarget(fmt.Sprintf("p%d", i), srv.URL)
+			}
+			config := createConfig()
+			config.Path = t.Name()
+			config.Logger = quietLogger
+			config.Timeout = 100 * time.Millisecond
+			config.Targets = targets
+			p, err := NewProxy(config)
+			require.NoError(t, err)
+			t.Cleanup(p.hcm.Stop)
+
+			assert.Equal(t, http.StatusServiceUnavailable, postRPC(p, "/", nil).Code)
+			assert.True(t, p.hcm.GetHealthChecker("p0", "http").IsTainted(), "first failure taints")
+			assert.False(t, p.hcm.GetHealthChecker("p1", "http").IsTainted(), "second does not")
+			assert.False(t, p.hcm.GetHealthChecker("p2", "http").IsTainted())
+			assert.Equal(t, int32(1), hits[1].Load())
+			assert.Zero(t, hits[2].Load(), "failover stops after two")
+		})
+	}
+}
+
+// Connection errors say something about the provider: each one is tainted
+// and failover goes on to the next.
+func TestConnectionErrorsStillTaintEveryProvider(t *testing.T) {
+	dead := func() string { // a closed port: connection refused
+		srv := httptest.NewServer(http.NotFoundHandler())
+		srv.Close()
+		return srv.URL
+	}
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":9,"result":"0x1"}`))
+	}))
+	t.Cleanup(ok.Close)
+	p := newTestProxy(t, "", httpTarget("d0", dead()), httpTarget("d1", dead()), httpTarget("d2", dead()), httpTarget("ok", ok.URL))
+	t.Cleanup(p.hcm.Stop)
+
+	assert.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code)
+	for _, n := range []string{"d0", "d1", "d2"} {
+		assert.True(t, p.hcm.GetHealthChecker(n, "http").IsTainted(), n)
 	}
 }

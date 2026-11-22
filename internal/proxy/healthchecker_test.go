@@ -538,8 +538,10 @@ func TestHealthCheck429GetsRateLimitTaint(t *testing.T) {
 }
 
 // The Tron check asks for the latest block header only, and a response
-// without a block number fails instead of recording block 0.
+// without a block number fails instead of recording block 0. The network
+// fingerprint is the hash of block 0, fetched on the first check only.
 func TestTronCheckFetchesHeaderOnly(t *testing.T) {
+	const genesis = "00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc"
 	for name, tc := range map[string]struct {
 		reply string
 		ok    bool
@@ -548,10 +550,17 @@ func TestTronCheckFetchesHeaderOnly(t *testing.T) {
 		"empty":  {`{}`, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var path, body string
+			var mu sync.Mutex
+			requests := map[string][]string{} // path -> bodies
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
-				path, body = r.URL.Path, string(b)
+				mu.Lock()
+				requests[r.URL.Path] = append(requests[r.URL.Path], string(b))
+				mu.Unlock()
+				if r.URL.Path == "/wallet/getblockbynum" {
+					_, _ = w.Write([]byte(`{"blockID":"` + genesis + `"}`))
+					return
+				}
 				_, _ = w.Write([]byte(tc.reply))
 			}))
 			t.Cleanup(srv.Close)
@@ -559,12 +568,68 @@ func TestTronCheckFetchesHeaderOnly(t *testing.T) {
 			t.Cleanup(hc.Stop)
 			hc.CheckAndSetHealth()
 
-			assert.Equal(t, "/wallet/getblock", path)
-			assert.JSONEq(t, `{"detail":false}`, body)
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, requests["/wallet/getblock"], 1)
+			assert.JSONEq(t, `{"detail":false}`, requests["/wallet/getblock"][0])
 			assert.Equal(t, !tc.ok, hc.IsTainted())
-			if tc.ok {
-				assert.Equal(t, uint64(88236685), hc.BlockNumber())
+			if !tc.ok {
+				return
 			}
+			assert.Equal(t, uint64(88236685), hc.BlockNumber())
+			require.Len(t, requests["/wallet/getblockbynum"], 1)
+			assert.JSONEq(t, `{"num":0}`, requests["/wallet/getblockbynum"][0])
+			assert.Equal(t, genesis, hc.Network())
+
+			mu.Unlock()
+			hc.CheckAndSetHealth()
+			mu.Lock()
+			assert.Len(t, requests["/wallet/getblockbynum"], 1, "fingerprint fetched once")
 		})
 	}
+}
+
+// Over WebSocket, the Solana genesis hash is read on the check's connection
+// before the slot subscription, and only on the first check.
+func TestSolanaWebSocketCheckReadsGenesisOnce(t *testing.T) {
+	var genesisCalls atomic.Int32
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			var req struct {
+				ID     int    `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := conn.ReadJSON(&req); err != nil {
+				return
+			}
+			switch req.Method {
+			case "getGenesisHash":
+				genesisCalls.Add(1)
+				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"})
+			case "slotSubscribe":
+				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": 7})
+				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "method": "slotNotification",
+					"params": map[string]any{"subscription": 7, "result": map[string]any{"slot": 380000000}}})
+			default:
+				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": true})
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	hc := NewHealthChecker(HealthCheckerConfig{Logger: quietLogger, URL: "ws" + strings.TrimPrefix(srv.URL, "http"), Name: "p",
+		Path: t.Name(), Timeout: time.Second, ChainType: "solana", ConnectionType: "websocket"})
+	t.Cleanup(hc.Stop)
+
+	hc.CheckAndSetHealth()
+	hc.CheckAndSetHealth()
+	assert.False(t, hc.IsTainted())
+	assert.Equal(t, uint64(380000000), hc.BlockNumber())
+	assert.Equal(t, "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", hc.Network())
+	assert.Equal(t, int32(1), genesisCalls.Load())
 }
