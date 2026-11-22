@@ -602,7 +602,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 			// Handle health check requests successfully
 			if method, ok := req["method"].(string); ok {
 				switch method {
-				case "eth_blockNumber":
+				case "eth_blockNumber", "eth_chainId":
 					w.Header().Set("Content-Type", "application/json")
 					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
 					return
@@ -626,7 +626,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 			// Handle health check requests successfully
 			if method, ok := req["method"].(string); ok {
 				switch method {
-				case "eth_blockNumber":
+				case "eth_blockNumber", "eth_chainId":
 					w.Header().Set("Content-Type", "application/json")
 					w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1234"}`))
 					return

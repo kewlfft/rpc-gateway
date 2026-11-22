@@ -1,9 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -146,26 +150,62 @@ func TestBlockLagTaintsTheLaggingEndpointOnly(t *testing.T) {
 	assert.False(t, bHTTP.IsTainted())
 }
 
-// Wiring: a completed health check records its block and runs the gate.
-func TestHealthCheckRunsBlockLagGate(t *testing.T) {
-	upstream := func(block int) *httptest.Server {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":"0x%x"}`, block)
-		}))
-		t.Cleanup(srv.Close)
-		return srv
-	}
+// evmUpstream answers health checks for an EVM node at a fixed block and
+// chain ID, counting the requests it gets.
+type evmUpstream struct {
+	block, chainID atomic.Uint64
+	requests, live atomic.Int32
+	*httptest.Server
+}
+
+func newEVMUpstream(t *testing.T, block, chainID uint64) *evmUpstream {
+	u := &evmUpstream{}
+	u.block.Store(block)
+	u.chainID.Store(chainID)
+	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u.requests.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if r.UserAgent() != userAgent {
+			u.live.Add(1)
+		}
+		switch {
+		case strings.Contains(string(body), "eth_blockNumber"):
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":"0x%x"}`, u.block.Load())
+		case strings.Contains(string(body), "eth_chainId"):
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":"0x%x"}`, u.chainID.Load())
+		default:
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			mockEVMHealthRPC(w, r)
+		}
+	}))
+	t.Cleanup(u.Close)
+	return u
+}
+
+// newUpstreamManager builds a manager over HTTP upstreams, never started:
+// tests run each endpoint's scheduled check themselves, in a chosen order.
+func newUpstreamManager(t *testing.T, ups map[string]*evmUpstream) *HealthCheckManager {
+	t.Helper()
 	config := createConfig()
 	config.Path = t.Name()
 	config.Logger = quietLogger
 	config.HealthChecks.BlockDiffThreshold = 2
-	config.Targets = []NodeProviderConfig{
-		httpTarget("lead", upstream(1000).URL),
-		httpTarget("lag", upstream(990).URL),
+	config.Targets = nil
+	for name, u := range ups {
+		config.Targets = append(config.Targets, httpTarget(name, u.URL))
 	}
 	hcm, err := NewHealthCheckManager(config)
 	require.NoError(t, err)
 	t.Cleanup(hcm.Stop)
+	return hcm
+}
+
+// Wiring: a completed health check records its block and runs the gate.
+func TestHealthCheckRunsBlockLagGate(t *testing.T) {
+	hcm := newUpstreamManager(t, map[string]*evmUpstream{
+		"lead": newEVMUpstream(t, 1000, 1),
+		"lag":  newEVMUpstream(t, 990, 1),
+	})
 	lead, lag := hcm.GetHealthChecker("lead", "http"), hcm.GetHealthChecker("lag", "http")
 
 	lead.CheckAndSetHealth()
@@ -174,4 +214,135 @@ func TestHealthCheckRunsBlockLagGate(t *testing.T) {
 	assert.Equal(t, uint64(990), lag.BlockNumber())
 	assert.True(t, lag.IsTainted())
 	assert.False(t, lead.IsTainted())
+}
+
+// Endpoints that disagree on the chain ID (say a BSC URL in the eth path)
+// stop the path: no guessing which is wrong, and no lag judgement across
+// chains, until the wrong URL is removed from the config.
+func TestChainIDConflictStopsThePath(t *testing.T) {
+	ups := map[string]*evmUpstream{
+		"a":     newEVMUpstream(t, 1000, 1),
+		"wrong": newEVMUpstream(t, 50_000_000, 56),
+	}
+	config := createConfig()
+	config.Path = t.Name()
+	config.Logger = quietLogger
+	config.Targets = []NodeProviderConfig{httpTarget("a", ups["a"].URL), httpTarget("wrong", ups["wrong"].URL)}
+	p, err := NewProxy(config)
+	require.NoError(t, err)
+	t.Cleanup(p.hcm.Stop)
+	a, wrong := p.hcm.GetHealthChecker("a", "http"), p.hcm.GetHealthChecker("wrong", "http")
+
+	a.CheckAndSetHealth()
+	assert.False(t, p.hcm.ChainConflict(), "one chain ID known: no conflict")
+	wrong.CheckAndSetHealth()
+	assert.True(t, p.hcm.ChainConflict())
+	assert.False(t, a.IsTainted(), "the higher wrong-chain block must not taint a")
+
+	rr := postRPC(p, "/", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.Contains(t, rr.Body.String(), "different chain IDs")
+	assert.Zero(t, ups["a"].live.Load()+ups["wrong"].live.Load(), "no request forwarded")
+
+	// Endpoints agreeing again (here: the wrong one re-reads its chain ID on
+	// recovery) serve the path again
+	ups["wrong"].chainID.Store(1)
+	wrong.TaintHealthCheck("test")
+	makeDue(wrong)
+	wrong.CheckAndSetHealth()
+	assert.False(t, p.hcm.ChainConflict())
+	assert.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code)
+}
+
+// The chain ID is a constant: it is requested on the first check only, and
+// again when a tainted endpoint is rechecked.
+func TestChainIDFetchedOnceAndOnRecovery(t *testing.T) {
+	var chainCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "eth_chainId") {
+			chainCalls.Add(1)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		mockEVMHealthRPC(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	hc := NewHealthChecker(HealthCheckerConfig{Logger: quietLogger, URL: srv.URL, Name: "p", Path: t.Name(), Timeout: time.Second})
+	t.Cleanup(hc.Stop)
+
+	for range 4 {
+		hc.CheckAndSetHealth()
+	}
+	assert.Equal(t, int32(1), chainCalls.Load())
+	assert.Equal(t, uint64(1), hc.sample.Load().chainID)
+
+	hc.TaintHealthCheck("test")
+	makeDue(hc)
+	hc.CheckAndSetHealth()
+	assert.False(t, hc.IsTainted())
+	assert.Equal(t, int32(2), chainCalls.Load(), "re-read on recovery")
+}
+
+// Without a configured chain ID, a tie can't tell which side is wrong:
+// nobody is tainted for the chain (the block gate still applies).
+func TestChainIDTieJudgesNobody(t *testing.T) {
+	hcm := newUpstreamManager(t, map[string]*evmUpstream{
+		"a": newEVMUpstream(t, 1000, 1),
+		"b": newEVMUpstream(t, 1000, 10),
+	})
+	hcm.GetHealthChecker("a", "http").CheckAndSetHealth()
+	hcm.GetHealthChecker("b", "http").CheckAndSetHealth()
+	assert.False(t, hcm.GetHealthChecker("a", "http").IsTainted())
+	assert.False(t, hcm.GetHealthChecker("b", "http").IsTainted())
+}
+
+// ageSamples moves every recorded sample d into the past, as if a check
+// interval had passed.
+func ageSamples(hcm *HealthCheckManager, d time.Duration) {
+	for _, c := range hcm.checkers {
+		if s := c.sample.Load(); s != nil {
+			aged := *s
+			aged.at = s.at.Add(-d)
+			c.sample.Store(&aged)
+		}
+	}
+}
+
+// makeDue ends a recheck taint's backoff, as if its wait had elapsed.
+func makeDue(h *HealthChecker) {
+	h.mu.Lock()
+	h.taint.until = time.Now().Add(-time.Second)
+	h.mu.Unlock()
+}
+
+// A lag-tainted endpoint recovers only through a scheduled check of the same
+// cycle as its peers, whichever answers first.
+func TestLaggingEndpointStaysOutOnRecheck(t *testing.T) {
+	for _, order := range [][]string{{"lead", "lag"}, {"lag", "lead"}} {
+		t.Run(strings.Join(order, "-then-"), func(t *testing.T) {
+			lagUp := newEVMUpstream(t, 990, 1)
+			hcm := newUpstreamManager(t, map[string]*evmUpstream{"lead": newEVMUpstream(t, 1000, 1), "lag": lagUp})
+			hcm.GetHealthChecker("lead", "http").setBlockNumber(995, time.Now().Add(-time.Minute)) // Ethereum pace
+			lag := hcm.GetHealthChecker("lag", "http")
+			lag.TaintHealthCheck("block lag")
+			makeDue(lag)
+
+			for _, n := range order {
+				hcm.GetHealthChecker(n, "http").CheckAndSetHealth()
+			}
+			assert.True(t, lag.IsTainted(), "still 10 behind")
+			assert.False(t, hcm.GetHealthChecker("lead", "http").IsTainted())
+
+			// Caught up: the next due recheck, a cycle later, lifts it
+			lagUp.block.Store(1000)
+			ageSamples(hcm, time.Minute)
+			makeDue(lag)
+			for _, n := range order {
+				hcm.GetHealthChecker(n, "http").CheckAndSetHealth()
+			}
+			assert.False(t, lag.IsTainted())
+		})
+	}
 }

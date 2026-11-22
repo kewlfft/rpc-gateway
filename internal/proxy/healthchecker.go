@@ -83,6 +83,7 @@ type TaintConfig struct {
 	Detail            string        // optional; logged at INFO when provider is tainted
 	Wait              time.Duration // optional provider hint (Retry-After); overrides backoff
 	Probe             bool          // on expiry, untaint only if a health probe succeeds
+	Recheck           bool          // no timer: lifted only by a passing scheduled check after the wait
 }
 
 var (
@@ -92,6 +93,7 @@ var (
 		MaxWaitTime:       time.Minute * 20,
 		ResetWaitDuration: time.Minute * 5,
 		Reason:            "health check failure",
+		Recheck:           true,
 	}
 
 	// HTTP request taint configuration (faster cycle)
@@ -116,9 +118,12 @@ var (
 
 // TaintState represents the current state of a health checker
 type TaintState struct {
-	lastRemoval  time.Time
+	lastRemoval  time.Time // last taint or removal, for backoff resets
 	waitTime     time.Duration
 	removalTimer *time.Timer
+	cfg          TaintConfig // of the current taint
+	until        time.Time   // Recheck taints: earliest scheduled check that may lift it
+	gen          uint64      // bumped on every taint change; stale timers compare it
 }
 
 type HealthCheckerConfig struct {
@@ -137,16 +142,37 @@ type HealthCheckerConfig struct {
 // BlockNumberUpdateCallback is called after a health checker records a new block sample
 type BlockNumberUpdateCallback func()
 
-// blockSample is a block number and when it was received.
+// blockSample is a block number, the chain ID reported with it (EVM only,
+// 0 otherwise) and when the block number was received.
 type blockSample struct {
-	block uint64
-	at    time.Time
+	block   uint64
+	chainID uint64
+	at      time.Time
+	rate    float64 // blocks/s from this endpoint's earlier samples, if rateOK
+	rateOK  bool
+}
+
+// minRateSpan is the history an endpoint's block rate is measured over.
+const minRateSpan = 10 * time.Second
+
+// recordSample stores s, deriving the endpoint's block rate from the previous
+// sample when at least minRateSpan apart (else keeping the previous rate).
+func (h *HealthChecker) recordSample(s blockSample) {
+	if prev := h.sample.Load(); prev != nil {
+		if span := s.at.Sub(prev.at); span >= minRateSpan && s.block >= prev.block {
+			s.rate, s.rateOK = float64(s.block-prev.block)/span.Seconds(), true
+		} else if span < minRateSpan {
+			s.rate, s.rateOK = prev.rate, prev.rateOK
+		}
+	}
+	h.sample.Store(&s)
 }
 
 type HealthChecker struct {
 	config              HealthCheckerConfig
 	httpClient          *http.Client
 	sample              atomic.Pointer[blockSample] // latest block number; nil until the first check
+	chainID             atomic.Uint64               // EVM chain ID, fetched once (0 = not yet)
 	ethCallCheckCounter atomic.Uint32
 	mu                  sync.Mutex // Only for taint state
 	isTainted           atomic.Bool
@@ -228,26 +254,61 @@ func (h *HealthChecker) checkSolanaSlotViaWebSocket(conn *websocket.Conn) (uint6
 	return uint64(slot), nil
 }
 
-// checkEVMBlockNumberViaWebSocket performs EVM block number check via WebSocket
-func (h *HealthChecker) checkEVMBlockNumberViaWebSocket(conn *websocket.Conn) (uint64, error) {
-	if err := conn.WriteJSON(map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []any{},
-	}); err != nil {
-		return 0, fmt.Errorf("eth_blockNumber request failed: %w", err)
+// wsCall sends one JSON-RPC request on conn and returns its hex result as uint64.
+func wsCall(conn *websocket.Conn, id int, method string) (uint64, error) {
+	if err := conn.WriteJSON(jsonRPCRequest[[]any]{"2.0", id, method, []any{}}); err != nil {
+		return 0, fmt.Errorf("%s request failed: %w", method, err)
 	}
-
 	var resp struct {
-		Result string `json:"result"`
+		Result string        `json:"result"`
+		Error  *JSONRPCError `json:"error"`
 	}
 	if err := conn.ReadJSON(&resp); err != nil {
-		return 0, fmt.Errorf("eth_blockNumber response failed: %w", err)
+		return 0, fmt.Errorf("%s response failed: %w", method, err)
 	}
-
-	blockNumber, err := parseHex(resp.Result)
+	if resp.Error != nil {
+		return 0, fmt.Errorf("%s RPC error: %s", method, resp.Error.Message)
+	}
+	v, err := parseHex(resp.Result)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse block number: %w", err)
+		return 0, fmt.Errorf("%s: invalid result %q: %w", method, resp.Result, err)
 	}
-	return blockNumber, nil
+	return v, nil
+}
+
+// checkEVMBlockNumberViaWebSocket fetches the block number, and the chain ID
+// on the same connection when asked
+func (h *HealthChecker) checkEVMBlockNumberViaWebSocket(conn *websocket.Conn, withChainID bool) (blockSample, error) {
+	block, err := wsCall(conn, 1, "eth_blockNumber")
+	if err != nil {
+		return blockSample{}, err
+	}
+	at := time.Now()
+	if withChainID {
+		id, err := wsCall(conn, 2, "eth_chainId")
+		if err != nil {
+			return blockSample{}, err
+		}
+		h.chainID.Store(id)
+	}
+	return blockSample{block: block, chainID: h.chainID.Load(), at: at}, nil
+}
+
+// fetchHexResult makes an HTTP JSON-RPC call without params and parses its hex result.
+func (h *HealthChecker) fetchHexResult(ctx context.Context, method string) (uint64, error) {
+	rpcResp, err := h.makeJSONRPCCall(ctx, method, []any{})
+	if err != nil {
+		return 0, err
+	}
+	result, ok := rpcResp.Result.(string)
+	if !ok {
+		return 0, fmt.Errorf("invalid result type for %s", method)
+	}
+	v, err := parseHex(result)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid result %q: %w", method, result, err)
+	}
+	return v, nil
 }
 
 // blockCheckMethod names the request checkBlockNumber makes, for logs.
@@ -263,8 +324,12 @@ func (h *HealthChecker) blockCheckMethod() string {
 	return "eth_blockNumber"
 }
 
-func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
-	var blockNumber uint64
+// checkBlockNumber fetches the endpoint's latest block. On EVM the sample
+// carries the endpoint's chain ID, which is a constant: it is requested only
+// when withChainID is set or it is not known yet, to spare rate limits.
+func (h *HealthChecker) checkBlockNumber(ctx context.Context, withChainID bool) (blockSample, error) {
+	withChainID = withChainID || h.chainID.Load() == 0
+	var sample blockSample
 
 	switch {
 	case h.config.ConnectionType == "websocket":
@@ -280,9 +345,9 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		if err != nil {
 			// The status says why a handshake failed (e.g. 403 IP blocked, 429 rate limited)
 			if resp != nil {
-				return 0, fmt.Errorf("%w (HTTP %d)", err, resp.StatusCode)
+				return sample, fmt.Errorf("%w (HTTP %d)", err, resp.StatusCode)
 			}
-			return 0, err
+			return sample, err
 		}
 		defer conn.Close()
 
@@ -294,27 +359,28 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		conn.SetReadDeadline(deadline)
 
 		if h.config.ChainType == "solana" {
-			blockNumber, err = h.checkSolanaSlotViaWebSocket(conn)
+			sample.block, err = h.checkSolanaSlotViaWebSocket(conn)
+			sample.at = time.Now()
 		} else {
-			blockNumber, err = h.checkEVMBlockNumberViaWebSocket(conn)
+			sample, err = h.checkEVMBlockNumberViaWebSocket(conn, withChainID)
 		}
 		if err != nil {
-			return 0, err
+			return blockSample{}, err
 		}
 
 	case h.config.ChainType == "solana":
 		// Make optimized JSON-RPC call
 		rpcResp, err := h.makeJSONRPCCall(ctx, "getSlot", []any{map[string]string{"commitment": "processed"}})
 		if err != nil {
-			return 0, err
+			return sample, err
 		}
 
 		// Parse result to uint64
 		result, ok := rpcResp.Result.(float64)
 		if !ok {
-			return 0, fmt.Errorf("invalid result type for getSlot")
+			return sample, fmt.Errorf("invalid result type for getSlot")
 		}
-		blockNumber = uint64(result)
+		sample = blockSample{block: uint64(result), at: time.Now()}
 
 	case h.config.ChainType == "tron":
 		var response struct {
@@ -329,7 +395,7 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		// Create a POST request with empty body
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.URL+"/wallet/getnowblock", nil)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create request: %w", err)
+			return sample, fmt.Errorf("failed to create request: %w", err)
 		}
 
 		// Add custom headers if configured
@@ -340,48 +406,46 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		// Send the request
 		resp, err := h.httpClient.Do(req)
 		if err != nil {
-			return 0, fmt.Errorf("failed to send request: %w", err)
+			return sample, fmt.Errorf("failed to send request: %w", err)
 		}
 		defer resp.Body.Close()
 
 		// Check response status
 		if resp.StatusCode != http.StatusOK {
-			return 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			return sample, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		}
 
 		if err := jsonv2.UnmarshalRead(resp.Body, &response); err != nil {
-			return 0, fmt.Errorf("failed to decode response: %w", err)
+			return sample, fmt.Errorf("failed to decode response: %w", err)
 		}
 
-		blockNumber = response.BlockHeader.RawData.Number
+		sample = blockSample{block: response.BlockHeader.RawData.Number, at: time.Now()}
 
 	default:
-		// Make optimized JSON-RPC call for EVM chains
-		rpcResp, err := h.makeJSONRPCCall(ctx, "eth_blockNumber", []any{})
+		block, err := h.fetchHexResult(ctx, "eth_blockNumber")
 		if err != nil {
-			return 0, err
+			return sample, err
 		}
-
-		// Parse hex result to uint64
-		result, ok := rpcResp.Result.(string)
-		if !ok {
-			return 0, fmt.Errorf("invalid result type for eth_blockNumber")
+		at := time.Now()
+		if withChainID {
+			id, err := h.fetchHexResult(ctx, "eth_chainId")
+			if err != nil {
+				return sample, err
+			}
+			h.chainID.Store(id)
 		}
-
-		blockNumber, err = parseHex(result)
-		if err != nil {
-			return 0, fmt.Errorf("failed to parse block number: %w", err)
-		}
+		sample = blockSample{block: block, chainID: h.chainID.Load(), at: at}
 	}
 
 	// Common debug log
 	h.config.Logger.Debug("block number fetched",
 		"connectionType", h.config.ConnectionType,
 		"provider", h.config.Name,
-		"blockNumber", blockNumber,
+		"blockNumber", sample.block,
+		"chainId", sample.chainID,
 		"path", h.config.Path)
 
-	return blockNumber, nil
+	return sample, nil
 }
 
 // checkEthCall performs an `eth_call` against the SHA-256 precompile (0x02) to
@@ -409,22 +473,56 @@ func (h *HealthChecker) checkEthCall(c context.Context) error {
 }
 
 // CheckAndSetHealth makes the following calls
-// - `eth_blockNumber` - to get the latest block reported by the node
-// - `eth_call` - SHA-256 precompile probe (runs sequentially after block number check)
+//   - `eth_blockNumber` - latest block, judged by the manager's gates; on EVM
+//     `eth_chainId` too, but only on the first check and when recovering
+//   - `eth_call` - SHA-256 precompile probe (runs sequentially after block number check)
+//
 // And sets the health status based on the responses.
+//
+// A health-check taint is lifted only here, by a passing check once its backoff
+// has elapsed, so a recovering endpoint is judged on the shared schedule
+// alongside its peers instead of coming back unverified when a timer expires.
+// Endpoints under a short HTTP taint are still checked, so a dead one gets the
+// long health-check taint; rate-limited ones skip checks and recover by probe.
 func (h *HealthChecker) CheckAndSetHealth() {
-	// Fast path: if tainted, skip entirely (atomic read, very fast)
-	if h.IsTainted() {
+	if h.skipCheck(time.Now()) {
 		return
 	}
+	recovering := h.IsTainted()
 
 	// Run block number check first, then eth_call check sequentially
 	// This reduces concurrent load and prevents wasting requests if block number fails
-	h.checkAndSetBlockNumberHealth()
-	// Only run eth_call check after block number completes successfully
-	if !h.IsTainted() {
-		h.checkAndSetEthCallHealth()
+	if !h.checkAndSetBlockNumberHealth(recovering) || h.skipCheck(time.Now()) {
+		return // failed, or a gate (block lag, chain ID) tainted it
 	}
+	if !h.checkAndSetEthCallHealth(recovering) {
+		return
+	}
+	h.liftRecheckTaint()
+}
+
+// skipCheck reports whether the scheduled check is skipped: a probing taint
+// recovers on its own, and a recheck taint first waits out its backoff.
+func (h *HealthChecker) skipCheck(now time.Time) bool {
+	if !h.isTainted.Load() {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.isTainted.Load() && (h.taint.cfg.Probe || (h.taint.cfg.Recheck && now.Before(h.taint.until)))
+}
+
+// liftRecheckTaint removes a recheck taint whose backoff has elapsed; called
+// after a passing check (a failed one re-arms the taint into the future).
+func (h *HealthChecker) liftRecheckTaint() {
+	h.mu.Lock()
+	if !h.isTainted.Load() || !h.taint.cfg.Recheck || time.Now().Before(h.taint.until) {
+		h.mu.Unlock()
+		return
+	}
+	h.removeTaintLocked()
+	h.mu.Unlock()
+	h.logRemoved()
 }
 
 // SetBlockNumberUpdateCallback sets the function called after each block number update.
@@ -433,33 +531,39 @@ func (h *HealthChecker) SetBlockNumberUpdateCallback(callback BlockNumberUpdateC
 	h.onBlockNumberUpdate = callback
 }
 
-func (h *HealthChecker) checkAndSetBlockNumberHealth() {
+// checkAndSetBlockNumberHealth records a new block sample and runs the
+// manager's gates on it; false if the block number could not be fetched.
+// A recovering endpoint re-reads its chain ID, in case its URL now serves another chain.
+func (h *HealthChecker) checkAndSetBlockNumberHealth(recovering bool) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
 	defer cancel()
 
-	blockNumber, err := h.checkBlockNumber(ctx)
+	sample, err := h.checkBlockNumber(ctx, recovering)
 	if err != nil {
 		h.TaintHealthCheck(fmt.Sprintf("%s: %v", h.blockCheckMethod(), err))
-		return
+		return false
 	}
 
-	h.setBlockNumber(blockNumber, time.Now())
+	h.recordSample(sample)
 
 	if h.onBlockNumberUpdate != nil {
 		h.onBlockNumberUpdate()
 	}
+	return true
 }
 
-func (h *HealthChecker) checkAndSetEthCallHealth() {
+// checkAndSetEthCallHealth runs the eth_call probe every second cycle, and
+// always for a recovering endpoint; false if it failed.
+func (h *HealthChecker) checkAndSetEthCallHealth(force bool) bool {
 	// Skip eth_call check for non-EVM chains
 	if h.config.ChainType != "evm" {
-		return
+		return true
 	}
 
 	// Run eth_call check only on every second health cycle, starting from the second one.
 	// Sequence per provider: 1st call -> skip, 2nd -> run, 3rd -> skip, 4th -> run, ...
-	if h.ethCallCheckCounter.Add(1)%2 != 0 {
-		return
+	if h.ethCallCheckCounter.Add(1)%2 != 0 && !force {
+		return true
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
@@ -467,8 +571,9 @@ func (h *HealthChecker) checkAndSetEthCallHealth() {
 
 	if err := h.checkEthCall(ctx); err != nil {
 		h.TaintHealthCheck(fmt.Sprintf("eth_call sha256: %v", err))
-		return
+		return false
 	}
+	return true
 }
 
 func (h *HealthChecker) Start(c context.Context) {
@@ -506,6 +611,7 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 func (h *HealthChecker) Stop() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.taint.gen++ // invalidates a probe in flight
 	if h.taint.removalTimer != nil {
 		h.taint.removalTimer.Stop()
 		h.taint.removalTimer = nil
@@ -521,36 +627,54 @@ func (h *HealthChecker) IsTainted() bool {
 }
 
 // Taint marks the provider as tainted with backoff.
+//
+// An endpoint that is already tainted is left alone, except that a recheck
+// (health-check) taint takes over a timer taint, and re-arms a recheck taint
+// whose recheck just failed; both double the wait.
 func (h *HealthChecker) Taint(cfg TaintConfig) {
-	// Atomically taint; if already tainted, skip repeated taint work and logs.
-	// CompareAndSwap also stops two concurrent callers from both arming a timer.
-	if !h.isTainted.CompareAndSwap(false, true) {
+	// Fast path: repeated live-request failures while tainted, no lock
+	if !cfg.Recheck && h.isTainted.Load() {
 		return
 	}
 
-	// Update taint state under lock
-	h.mu.Lock()
-
-	// Calculate timing values
 	now := time.Now()
+	h.mu.Lock()
 	var wait time.Duration
-	if time.Since(h.taint.lastRemoval) <= cfg.ResetWaitDuration {
-		wait = min(h.taint.waitTime*2, cfg.MaxWaitTime)
-	} else {
-		wait = cfg.InitialWaitTime
+	switch {
+	case !h.isTainted.Load():
+		if now.Sub(h.taint.lastRemoval) <= cfg.ResetWaitDuration {
+			wait = h.taint.waitTime * 2
+		} else {
+			wait = cfg.InitialWaitTime
+		}
+	case cfg.Recheck && (!h.taint.cfg.Recheck || !now.Before(h.taint.until)):
+		wait = h.taint.waitTime * 2 // escalate a timer taint, or recheck failed
+	default:
+		h.mu.Unlock()
+		return
 	}
+	wait = min(max(wait, cfg.InitialWaitTime), cfg.MaxWaitTime)
 	if cfg.Wait > 0 {
 		wait = min(max(cfg.Wait, cfg.InitialWaitTime), cfg.MaxWaitTime)
 	}
 
-	// Cancel old timer (AfterFunc timers have no channel to drain)
+	// Cancel old timer (AfterFunc timers have no channel to drain); gen
+	// guards against one that already fired
 	if h.taint.removalTimer != nil {
 		h.taint.removalTimer.Stop()
+		h.taint.removalTimer = nil
 	}
-
-	h.taint.removalTimer = time.AfterFunc(wait, func() { h.expireTaint(cfg) })
+	h.taint.gen++
+	if cfg.Recheck {
+		h.taint.until = now.Add(wait)
+	} else {
+		gen := h.taint.gen
+		h.taint.removalTimer = time.AfterFunc(wait, func() { h.expireTaint(cfg, gen) })
+	}
+	h.taint.cfg = cfg
 	h.taint.lastRemoval = now
 	h.taint.waitTime = wait
+	h.isTainted.Store(true)
 	h.mu.Unlock()
 
 	// Logging
@@ -567,28 +691,36 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 	h.config.Logger.Info("provider tainted", logArgs...)
 }
 
-// expireTaint ends a taint, or for probing configs keeps it (doubling the wait)
-// until a health probe succeeds.
-func (h *HealthChecker) expireTaint(cfg TaintConfig) {
+// expireTaint ends a timer taint, or for probing configs keeps it (doubling
+// the wait) until a health probe succeeds. gen identifies the taint it was
+// armed for; a superseded or stopped taint is left alone.
+func (h *HealthChecker) expireTaint(cfg TaintConfig, gen uint64) {
 	if cfg.Probe {
 		ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
-		_, err := h.checkBlockNumber(ctx)
+		_, err := h.checkBlockNumber(ctx, false)
 		cancel()
 		if err != nil {
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if h.taint.removalTimer == nil { // stopped meanwhile (shutdown)
+			if h.taint.gen != gen {
 				return
 			}
 			h.taint.waitTime = min(h.taint.waitTime*2, cfg.MaxWaitTime)
-			h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, func() { h.expireTaint(cfg) })
+			h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, func() { h.expireTaint(cfg, gen) })
 			h.config.Logger.Debug("still rate limited",
 				"name", h.config.Name, "path", h.config.Path,
 				"error", err, "retry_sec", h.taint.waitTime.Seconds())
 			return
 		}
 	}
-	h.RemoveTaint()
+	h.mu.Lock()
+	if h.taint.gen != gen {
+		h.mu.Unlock()
+		return
+	}
+	h.removeTaintLocked()
+	h.mu.Unlock()
+	h.logRemoved()
 }
 
 // TaintRateLimited taints after an HTTP 429; wait is the provider's hint (0 if none).
@@ -613,18 +745,28 @@ func (h *HealthChecker) TaintHealthCheck(detail ...string) {
 	h.Taint(cfg)
 }
 
+// RemoveTaint lifts any taint at once and cancels its pending removal.
 func (h *HealthChecker) RemoveTaint() {
-	// Update atomic state
-	h.isTainted.Store(false)
-
-	// Update taint state under lock
 	h.mu.Lock()
+	h.removeTaintLocked()
+	h.mu.Unlock()
+	h.logRemoved()
+}
+
+func (h *HealthChecker) removeTaintLocked() {
+	if h.taint.removalTimer != nil {
+		h.taint.removalTimer.Stop()
+		h.taint.removalTimer = nil
+	}
+	h.taint.gen++
 	h.taint.lastRemoval = time.Now()
-	h.taint.removalTimer = nil
+	h.isTainted.Store(false)
+}
+
+func (h *HealthChecker) logRemoved() {
+	h.mu.Lock()
 	nextWait := h.taint.waitTime
 	h.mu.Unlock()
-
-	// Log after all state updates are complete, using the captured wait time
 	h.config.Logger.Info("taint removed",
 		"connectionType", h.config.ConnectionType,
 		"path", h.config.Path,
@@ -640,5 +782,5 @@ func (h *HealthChecker) BlockNumber() uint64 {
 }
 
 func (h *HealthChecker) setBlockNumber(block uint64, at time.Time) {
-	h.sample.Store(&blockSample{block, at})
+	h.recordSample(blockSample{block: block, at: at})
 }

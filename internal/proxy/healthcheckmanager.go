@@ -3,8 +3,10 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,8 +19,9 @@ type HealthCheckManager struct {
 	checkerMap map[string]*HealthChecker // key: "name:connectionType"
 	timeout    time.Duration
 
-	lagMu     sync.Mutex  // serializes checkBlockLag
-	rateStart blockSample // first max block seen, for the chain's block rate
+	lagMu         sync.Mutex  // serializes checkBlockLag
+	chainConflict atomic.Bool // endpoints disagree on the chain ID: path not served
+	logger        *slog.Logger
 }
 
 // NewHealthCheckManager creates a new health check manager
@@ -31,6 +34,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 		path:       config.Path,
 		checkerMap: make(map[string]*HealthChecker),
 		timeout:    config.Timeout,
+		logger:     config.Logger,
 	}
 
 	for _, target := range config.Targets {
@@ -103,9 +107,6 @@ func (h *HealthCheckManager) GetHealthChecker(name string, connectionType string
 	return h.checkerMap[name+":"+connectionType]
 }
 
-// minRateSpan is the history of the max block needed before its rate is trusted.
-const minRateSpan = 10 * time.Second
-
 // checkBlockLag taints every endpoint whose latest block is more than
 // BlockDiffThreshold behind the highest block of the current check cycle.
 //
@@ -114,13 +115,16 @@ const minRateSpan = 10 * time.Second
 // sample is re-evaluated on every update. Samples older than the freshness
 // window (previous cycles, tainted endpoints that skip checks) are ignored.
 // When a sample was taken before the top one, the blocks the chain produced
-// in between (estimated from the max block's observed rate) are allowed, so
+// in between (at the top endpoint's own measured block rate) are allowed, so
 // fast chains don't taint an endpoint just for answering first. HTTP and
 // WebSocket endpoints of the same provider are judged separately.
 func (h *HealthCheckManager) checkBlockLag(now time.Time) {
 	h.lagMu.Lock()
 	defer h.lagMu.Unlock()
 
+	if h.checkChainIDs() {
+		return // blocks of different chains can't be compared
+	}
 	window := h.timeout + time.Second // covers one cycle: 500 ms WS stagger + response time
 	fresh := make([]*HealthChecker, 0, len(h.checkers))
 	samples := make([]blockSample, 0, len(h.checkers))
@@ -139,16 +143,15 @@ func (h *HealthCheckManager) checkBlockLag(now time.Time) {
 	if len(fresh) == 0 {
 		return
 	}
-	rate, rateKnown := h.blockRate(top)
 
 	for i, c := range fresh {
 		s := samples[i]
 		var allowance uint64
 		if skew := top.at.Sub(s.at); skew > 0 {
-			if !rateKnown {
+			if !top.rateOK {
 				continue // can't tell lag from answering earlier yet
 			}
-			allowance = uint64(math.Ceil(rate * skew.Seconds()))
+			allowance = uint64(math.Ceil(top.rate * skew.Seconds()))
 		}
 		// Equivalent to: top - block > threshold + allowance, without underflow
 		if top.block > s.block+h.config.BlockDiffThreshold+allowance {
@@ -160,16 +163,44 @@ func (h *HealthCheckManager) checkBlockLag(now time.Time) {
 	}
 }
 
-// blockRate returns blocks per second, measured from the first max block seen
-// to top. Caller holds lagMu.
-func (h *HealthCheckManager) blockRate(top blockSample) (float64, bool) {
-	if h.rateStart.at.IsZero() || top.block < h.rateStart.block {
-		h.rateStart = top // first sample, or the start was bogus high
-		return 0, false
+// checkChainIDs reports whether the path's EVM endpoints disagree on the
+// chain ID (a misconfigured URL). All endpoints of a path must serve the same
+// chain; rather than guess which is wrong, the path is not served until the
+// wrong URL is removed from the config. Caller holds lagMu.
+func (h *HealthCheckManager) checkChainIDs() bool {
+	var first uint64
+	conflict := false
+	for _, c := range h.checkers {
+		id := c.chainID.Load()
+		if id == 0 {
+			continue // not fetched yet, or not EVM
+		}
+		if first == 0 {
+			first = id
+		} else if id != first {
+			conflict = true
+			break
+		}
 	}
-	span := top.at.Sub(h.rateStart.at)
-	if span < minRateSpan {
-		return 0, false
+	if conflict != h.chainConflict.Load() {
+		h.chainConflict.Store(conflict)
+		if conflict {
+			ids := make([]string, 0, len(h.checkers))
+			for _, c := range h.checkers {
+				if id := c.chainID.Load(); id != 0 {
+					ids = append(ids, fmt.Sprintf("%s/%s=%d", c.config.Name, c.config.ConnectionType, id))
+				}
+			}
+			h.logger.Error("providers report different chain IDs: not serving this path until the wrong URL is removed from the config",
+				"path", h.path, "chainIds", ids)
+		} else {
+			h.logger.Info("providers agree on the chain ID again: serving this path", "path", h.path)
+		}
 	}
-	return float64(top.block-h.rateStart.block) / span.Seconds(), true
+	return conflict
+}
+
+// ChainConflict reports whether the path's endpoints disagree on the chain ID.
+func (h *HealthCheckManager) ChainConflict() bool {
+	return h.chainConflict.Load()
 }

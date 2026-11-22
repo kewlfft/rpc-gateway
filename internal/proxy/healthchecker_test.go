@@ -11,10 +11,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockEVMHealthRPC responds to eth_blockNumber and the SHA-256 precompile eth_call probe.
@@ -301,4 +304,146 @@ func TestHealthCheckTaintDetailNamesTheRealRequest(t *testing.T) {
 			assert.NotContains(t, logs.String(), "eth_", "%s/%s must not mention EVM methods", tc.chain, tc.conn)
 		}
 	}
+}
+
+// A WebSocket EVM endpoint answering a JSON-RPC error or a null result must
+// fail its check, not record block 0.
+func TestWebSocketEVMCheckRejectsErrorsAndEmptyResults(t *testing.T) {
+	for name, reply := range map[string]string{
+		"rpc error":   `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"header not found"}}`,
+		"null result": `{"jsonrpc":"2.0","id":1,"result":null}`,
+		"empty":       `{"jsonrpc":"2.0","id":1,"result":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			upgrader := websocket.Upgrader{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+					_ = conn.WriteMessage(websocket.TextMessage, []byte(reply))
+				}
+			}))
+			t.Cleanup(srv.Close)
+			hc := NewHealthChecker(HealthCheckerConfig{
+				Logger: quietLogger, URL: "ws" + strings.TrimPrefix(srv.URL, "http"), Name: "p",
+				Timeout: time.Second, Path: t.Name(), ConnectionType: "websocket",
+			})
+			t.Cleanup(hc.Stop)
+			hc.CheckAndSetHealth()
+			assert.True(t, hc.IsTainted())
+			assert.Nil(t, hc.sample.Load(), "no block recorded")
+		})
+	}
+}
+
+func TestParseHexRejectsEmpty(t *testing.T) {
+	for _, s := range []string{"", "0x", "0X"} {
+		_, err := parseHex(s)
+		assert.Error(t, err, "%q", s)
+	}
+	v, err := parseHex("0x10")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(16), v)
+}
+
+// countingUpstream serves healthy EVM health checks, counting them; failing
+// makes every request answer 500.
+func countingUpstream(t *testing.T) (url string, requests *atomic.Int32, failing *atomic.Bool) {
+	requests, failing = new(atomic.Int32), new(atomic.Bool)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if failing.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		mockEVMHealthRPC(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, requests, failing
+}
+
+func newCountingChecker(t *testing.T, url string) *HealthChecker {
+	hc := NewHealthChecker(HealthCheckerConfig{Logger: quietLogger, URL: url, Name: "p", Path: t.Name(), Timeout: time.Second})
+	t.Cleanup(hc.Stop)
+	return hc
+}
+
+// A health-check taint has no timer: it holds until a scheduled check after
+// its backoff passes, and checks during the backoff send nothing.
+func TestHealthCheckTaintLiftsOnlyByPassingRecheck(t *testing.T) {
+	url, requests, failing := countingUpstream(t)
+	hc := newCountingChecker(t, url)
+
+	failing.Store(true)
+	hc.CheckAndSetHealth()
+	require.True(t, hc.IsTainted())
+	hc.mu.Lock()
+	assert.Nil(t, hc.taint.removalTimer, "no timer can lift it unverified")
+	firstWait := hc.taint.waitTime
+	hc.mu.Unlock()
+
+	n := requests.Load()
+	failing.Store(false)
+	hc.CheckAndSetHealth()
+	assert.Equal(t, n, requests.Load(), "no request while backing off")
+	assert.True(t, hc.IsTainted())
+
+	failing.Store(true)
+	makeDue(hc)
+	hc.CheckAndSetHealth()
+	assert.True(t, hc.IsTainted(), "failed recheck keeps it out")
+	hc.mu.Lock()
+	assert.Equal(t, 2*firstWait, hc.taint.waitTime, "and doubles the wait")
+	hc.mu.Unlock()
+
+	failing.Store(false)
+	makeDue(hc)
+	hc.CheckAndSetHealth()
+	assert.False(t, hc.IsTainted(), "passing recheck lifts it")
+}
+
+// A live-request (HTTP) taint keeps its fast timer, but a failing scheduled
+// check turns it into a health-check taint, and the old timer can't lift it.
+func TestFailingCheckEscalatesHTTPTaint(t *testing.T) {
+	url, _, failing := countingUpstream(t)
+	hc := newCountingChecker(t, url)
+
+	hc.TaintHTTP()
+	hc.mu.Lock()
+	httpGen := hc.taint.gen
+	hc.mu.Unlock()
+
+	failing.Store(true)
+	hc.CheckAndSetHealth()
+	hc.mu.Lock()
+	assert.True(t, hc.taint.cfg.Recheck, "escalated")
+	assert.GreaterOrEqual(t, hc.taint.waitTime, healthCheckTaintConfig.InitialWaitTime)
+	hc.mu.Unlock()
+
+	hc.expireTaint(httpTaintConfig, httpGen) // the HTTP timer firing late
+	assert.True(t, hc.IsTainted(), "a superseded timer must not lift the new taint")
+}
+
+// A passing check leaves an HTTP taint to its timer, and rate-limited
+// endpoints are not checked at all: their probe handles recovery.
+func TestScheduledCheckRespectsTimerTaints(t *testing.T) {
+	url, requests, _ := countingUpstream(t)
+
+	hc := newCountingChecker(t, url)
+	hc.TaintHTTP()
+	hc.CheckAndSetHealth()
+	assert.True(t, hc.IsTainted(), "HTTP taint lasts until its timer")
+	assert.NotZero(t, requests.Load(), "but the endpoint is still checked")
+
+	limited := newCountingChecker(t, url)
+	limited.TaintRateLimited(time.Minute)
+	n := requests.Load()
+	limited.CheckAndSetHealth()
+	assert.Equal(t, n, requests.Load(), "no check while rate limited")
 }

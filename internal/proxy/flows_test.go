@@ -447,10 +447,12 @@ func newRateLimitedUpstream(t *testing.T, retryAfter string) *rateLimitedUpstrea
 	u := &rateLimitedUpstream{retryAfter: retryAfter}
 	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		if strings.Contains(string(body), "eth_blockNumber") {
-			u.probes.Add(1)
-		} else {
+		switch {
+		case r.UserAgent() != userAgent:
 			u.live.Add(1)
+		case strings.Contains(string(body), "eth_blockNumber"):
+			u.probes.Add(1)
+		default: // eth_chainId, second request of a probe
 		}
 		if u.limited.Load() {
 			if u.retryAfter != "" {

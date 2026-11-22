@@ -52,12 +52,16 @@ proxies:
 
 The gateway performs health checks on each RPC provider:
 
-1. Block number check: Verifies the provider can return the latest block number
-2. Gas left check: Verifies the provider can execute `eth_call` requests
+1. Block number check: Verifies the provider can return the latest block number (on EVM, also its chain ID, requested once and again when a tainted provider is rechecked)
+2. `eth_call` check: Verifies the provider executes EVM code (SHA-256 precompile), every second cycle
 
 A provider is marked as unhealthy if:
 - Any health check fails
-- The provider's block number is too far behind other providers
+- Its block number is more than `blockDiffThreshold` behind the highest block of the same check cycle (allowing for blocks produced while the other providers were still answering)
+
+A provider marked unhealthy by health checks comes back only after a scheduled check passes once its backoff (30 s, doubling up to 20 min) has elapsed. Failed live requests taint for a short time (10–60 s) and rate-limited (HTTP 429) providers recover through a probe.
+
+All EVM endpoints of a path must report the same chain ID. If they disagree (a misconfigured URL), the gateway logs an error listing each endpoint's chain ID and answers 503 for that path until the wrong URL is removed from the config.
 - The provider fails to respond within the configured timeout
 
 A provider is marked as healthy again as soon as it passes a health check.

@@ -18,14 +18,11 @@ type JSONRPCError struct {
 	Message string `json:"message"`
 }
 
-// parseHex parses a hex string to uint64.
+// parseHex parses a 0x-prefixed (or bare) hex quantity to uint64.
 func parseHex(s string) (uint64, error) {
-	if len(s) == 0 {
-		return 0, nil
-	}
 	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
 	if len(s) == 0 {
-		return 0, nil
+		return 0, errors.New("empty hex quantity")
 	}
 	return strconv.ParseUint(s, 16, 64)
 }

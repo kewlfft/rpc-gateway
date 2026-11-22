@@ -414,6 +414,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if p.hcm.ChainConflict() {
+		rpcerrors.WriteJSONRPCError(w, r, fmt.Sprintf("Providers for chain %s report different chain IDs; see the gateway log", p.hcm.path), http.StatusServiceUnavailable, bodyBytes)
+		return
+	}
+
 	healthyProviders := p.getHealthyProviders(connType)
 	defer p.releaseHealthyProviders(healthyProviders)
 
