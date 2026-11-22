@@ -12,8 +12,8 @@ import (
 
 const bufferSize = 16384
 
-// pingInterval is how often both sides of a proxied WebSocket are pinged (var for tests).
-var pingInterval = 15 * time.Second
+// defaultPingInterval is how often both sides of a proxied WebSocket are pinged.
+const defaultPingInterval = 15 * time.Second
 
 // upstreamCloseInfo contains error and whether it's a graceful close from upstream
 type upstreamCloseInfo struct {
@@ -30,16 +30,18 @@ var upgrader = websocket.Upgrader{
 // WebSocketProxy pipes a client WebSocket to a dedicated upstream connection.
 // Subscriptions live on that upstream connection and end with it.
 type WebSocketProxy struct {
-	targetURL string
-	logger    *slog.Logger
-	timeout   time.Duration // Timeout for connection attempts and pings
+	targetURL    string
+	logger       *slog.Logger
+	timeout      time.Duration // Timeout for connection attempts and pings
+	pingInterval time.Duration // defaultPingInterval; per instance so tests can shorten it
 }
 
 func NewWebSocketProxy(targetURL string, timeout time.Duration, logger *slog.Logger) *WebSocketProxy {
 	return &WebSocketProxy{
-		targetURL: targetURL,
-		logger:    logger,
-		timeout:   timeout,
+		targetURL:    targetURL,
+		logger:       logger,
+		timeout:      timeout,
+		pingInterval: defaultPingInterval,
 	}
 }
 
@@ -64,10 +66,10 @@ func (p *WebSocketProxy) serve(w http.ResponseWriter, r *http.Request, targetCon
 	}
 	defer clientConn.Close()
 
-	// Detect dead peers: pings go out every pingInterval, and each pong or message
+	// Detect dead peers: pings go out every p.pingInterval, and each pong or message
 	// pushes the read deadline out. A peer silent for longer than readTimeout is
 	// dropped instead of leaving the other side waiting forever.
-	readTimeout := 2*pingInterval + p.timeout
+	readTimeout := 2*p.pingInterval + p.timeout
 	for _, c := range []*websocket.Conn{clientConn, targetConn} {
 		_ = c.SetReadDeadline(time.Now().Add(readTimeout))
 		c.SetPongHandler(func(string) error {
@@ -123,7 +125,7 @@ func (p *WebSocketProxy) serve(w http.ResponseWriter, r *http.Request, targetCon
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
-		ticker := time.NewTicker(pingInterval)
+		ticker := time.NewTicker(p.pingInterval)
 		defer ticker.Stop()
 		for {
 			select {

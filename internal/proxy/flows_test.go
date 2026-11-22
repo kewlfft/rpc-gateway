@@ -213,7 +213,9 @@ func wsUpstream(t *testing.T, silent bool) (*httptest.Server, *atomic.Int32) {
 	return srv, &conns
 }
 
-func wsGateway(t *testing.T, upstreamURL string) *httptest.Server {
+// wsGateway serves a Proxy with one WebSocket target; an optional ping interval
+// overrides the default for that proxy only.
+func wsGateway(t *testing.T, upstreamURL string, ping ...time.Duration) *httptest.Server {
 	config := createConfig()
 	config.Path = t.Name()
 	config.Timeout = 200 * time.Millisecond
@@ -223,6 +225,9 @@ func wsGateway(t *testing.T, upstreamURL string) *httptest.Server {
 	}}}
 	p, err := NewProxy(config)
 	require.NoError(t, err)
+	if len(ping) > 0 {
+		p.targets[0].GetWebSocketProxy().pingInterval = ping[0]
+	}
 	gw := httptest.NewServer(p)
 	t.Cleanup(gw.Close)
 	return gw
@@ -243,12 +248,8 @@ func TestWebSocketDialsUpstreamOncePerClient(t *testing.T) {
 }
 
 func TestWebSocketDropsSilentPeerAndLeaksNoGoroutines(t *testing.T) {
-	old := pingInterval
-	pingInterval = 50 * time.Millisecond
-	t.Cleanup(func() { pingInterval = old })
-
 	upstream, _ := wsUpstream(t, true)
-	gw := wsGateway(t, upstream.URL)
+	gw := wsGateway(t, upstream.URL, 50*time.Millisecond)
 
 	var wg sync.WaitGroup
 	for range 5 {
@@ -433,4 +434,109 @@ func TestSlowClientIsNotBlamedOnProvider(t *testing.T) {
 	w := &slowWriter{discardWriter: discardWriter{h: make(http.Header)}, delay: 2 * timeout}
 	p.ServeHTTP(w, req)
 	assert.False(t, p.hcm.GetHealthChecker("p0", "http").IsTainted())
+}
+
+func TestRetryAfterParsing(t *testing.T) {
+	for _, tc := range []struct {
+		headers map[string]string
+		want    time.Duration
+	}{
+		{map[string]string{"Retry-After": "60"}, 60 * time.Second},
+		{map[string]string{"Retry-After": "1"}, time.Second},
+		{map[string]string{"X-Ratelimit-Reset": "1"}, time.Second},
+		{map[string]string{"X-Ratelimit-Reset": "0"}, 0}, // base.org: "now", use default
+		{map[string]string{"Retry-After": "garbage"}, 0},
+		{map[string]string{}, 0},
+	} {
+		h := http.Header{}
+		for k, v := range tc.headers {
+			h.Set(k, v)
+		}
+		assert.Equal(t, tc.want, retryAfter(h), "%v", tc.headers)
+	}
+	// HTTP date and Unix timestamp forms
+	h := http.Header{"Retry-After": {time.Now().Add(30 * time.Second).UTC().Format(http.TimeFormat)}}
+	assert.InDelta(t, 30, retryAfter(h).Seconds(), 1.5)
+	h = http.Header{"X-Ratelimit-Reset": {fmt.Sprint(time.Now().Add(20 * time.Second).Unix())}}
+	assert.InDelta(t, 20, retryAfter(h).Seconds(), 1.5)
+}
+
+// rateLimitedUpstream answers 429 (with optional Retry-After) while limited is set,
+// counting live requests and eth_blockNumber probes separately.
+type rateLimitedUpstream struct {
+	limited      atomic.Bool
+	retryAfter   string
+	live, probes atomic.Int32
+	*httptest.Server
+}
+
+func newRateLimitedUpstream(t *testing.T, retryAfter string) *rateLimitedUpstream {
+	u := &rateLimitedUpstream{retryAfter: retryAfter}
+	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "eth_blockNumber") {
+			u.probes.Add(1)
+		} else {
+			u.live.Add(1)
+		}
+		if u.limited.Load() {
+			if u.retryAfter != "" {
+				w.Header().Set("Retry-After", u.retryAfter)
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x10"}`))
+	}))
+	t.Cleanup(u.Close)
+	return u
+}
+
+func TestRateLimitedProviderRecoversViaProbe(t *testing.T) {
+	a := newRateLimitedUpstream(t, "") // no hint: 1 s default, doubling
+	b := newRateLimitedUpstream(t, "")
+	p := newTestProxy(t, "", httpTarget("a", a.URL), httpTarget("b", b.URL))
+	hcA := p.hcm.GetHealthChecker("a", "http")
+
+	a.limited.Store(true)
+	require.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code, "fails over to b")
+	require.True(t, hcA.IsTainted())
+
+	// First probe after ~1 s: still limited, so a stays tainted and the wait doubles
+	time.Sleep(1300 * time.Millisecond)
+	assert.Equal(t, int32(1), a.probes.Load())
+	assert.True(t, hcA.IsTainted())
+
+	// Limit lifts; the next probe (~2 s later) restores a
+	a.limited.Store(false)
+	for range 4 { // live traffic meanwhile goes to b only
+		require.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code)
+	}
+	time.Sleep(2300 * time.Millisecond)
+	assert.Equal(t, int32(2), a.probes.Load())
+	assert.False(t, hcA.IsTainted())
+	assert.Equal(t, int32(1), a.live.Load(), "no live request reached a while it was limited")
+
+	// Back to priority order: a serves again
+	require.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code)
+	assert.Equal(t, int32(2), a.live.Load())
+}
+
+func TestRateLimitHonoursRetryAfter(t *testing.T) {
+	a := newRateLimitedUpstream(t, "3")
+	b := newRateLimitedUpstream(t, "")
+	p := newTestProxy(t, "", httpTarget("a", a.URL), httpTarget("b", b.URL))
+	hcA := p.hcm.GetHealthChecker("a", "http")
+
+	a.limited.Store(true)
+	require.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code)
+	a.limited.Store(false)
+
+	time.Sleep(1500 * time.Millisecond) // past the 1 s default, before Retry-After
+	assert.True(t, hcA.IsTainted())
+	assert.Zero(t, a.probes.Load(), "no probe before Retry-After elapses")
+
+	time.Sleep(2000 * time.Millisecond)
+	assert.Equal(t, int32(1), a.probes.Load())
+	assert.False(t, hcA.IsTainted())
 }

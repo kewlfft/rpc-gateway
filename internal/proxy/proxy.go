@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -131,6 +132,27 @@ func isClientError(status int) bool {
 		return true
 	}
 	return false
+}
+
+// retryAfter reads how long a rate-limited provider asks us to wait: Retry-After
+// (seconds or HTTP date), else X-RateLimit-Reset (seconds, or a Unix timestamp).
+// It returns 0 when the provider gives no usable hint.
+func retryAfter(h http.Header) time.Duration {
+	if v := h.Get("Retry-After"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil {
+			return time.Duration(secs) * time.Second
+		}
+		if t, err := http.ParseTime(v); err == nil {
+			return time.Until(t)
+		}
+	}
+	if secs, err := strconv.ParseInt(h.Get("X-Ratelimit-Reset"), 10, 64); err == nil && secs > 0 {
+		if secs > 1e9 { // Unix timestamp
+			return time.Until(time.Unix(secs, 0))
+		}
+		return time.Duration(secs) * time.Second
+	}
+	return 0
 }
 
 // joinQuery appends the client's query to the provider URL's own query, so
@@ -332,6 +354,11 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header ht
 			"status", resp.StatusCode,
 			"method", r.Method,
 			"url", urlPath)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if hc := target.HealthChecker("http"); hc != nil {
+				hc.TaintRateLimited(retryAfter(resp.Header)) // handleProviderFailure's taint is then a no-op
+			}
+		}
 		p.handleProviderFailure(target, r, start, resp.StatusCode, nil)
 		return forwardRetry
 	}

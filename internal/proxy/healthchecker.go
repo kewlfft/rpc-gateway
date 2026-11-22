@@ -80,7 +80,9 @@ type TaintConfig struct {
 	MaxWaitTime       time.Duration
 	ResetWaitDuration time.Duration
 	Reason            string
-	Detail            string // optional; logged at INFO when provider is tainted
+	Detail            string        // optional; logged at INFO when provider is tainted
+	Wait              time.Duration // optional provider hint (Retry-After); overrides backoff
+	Probe             bool          // on expiry, untaint only if a health probe succeeds
 }
 
 var (
@@ -98,6 +100,17 @@ var (
 		MaxWaitTime:       time.Second * 60,
 		ResetWaitDuration: time.Second * 20,
 		Reason:            "HTTP error",
+	}
+
+	// HTTP 429: most limits are per-second windows, so start short. Recovery is
+	// confirmed by a background probe, so live requests never hit a provider that
+	// is still limiting; each failed probe doubles the wait.
+	rateLimitTaintConfig = TaintConfig{
+		InitialWaitTime:   time.Second,
+		MaxWaitTime:       2 * time.Minute,
+		ResetWaitDuration: 20 * time.Second,
+		Reason:            "rate limited",
+		Probe:             true,
 	}
 )
 
@@ -525,13 +538,16 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 	} else {
 		wait = cfg.InitialWaitTime
 	}
+	if cfg.Wait > 0 {
+		wait = min(max(cfg.Wait, cfg.InitialWaitTime), cfg.MaxWaitTime)
+	}
 
 	// Cancel old timer (AfterFunc timers have no channel to drain)
 	if h.taint.removalTimer != nil {
 		h.taint.removalTimer.Stop()
 	}
 
-	h.taint.removalTimer = time.AfterFunc(wait, h.RemoveTaint)
+	h.taint.removalTimer = time.AfterFunc(wait, func() { h.expireTaint(cfg) })
 	h.taint.lastRemoval = now
 	h.taint.waitTime = wait
 	h.mu.Unlock()
@@ -548,6 +564,37 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		logArgs = append(logArgs, "detail", cfg.Detail)
 	}
 	h.config.Logger.Info("provider tainted", logArgs...)
+}
+
+// expireTaint ends a taint, or for probing configs keeps it (doubling the wait)
+// until a health probe succeeds.
+func (h *HealthChecker) expireTaint(cfg TaintConfig) {
+	if cfg.Probe {
+		ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
+		_, err := h.checkBlockNumber(ctx)
+		cancel()
+		if err != nil {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if h.taint.removalTimer == nil { // stopped meanwhile (shutdown)
+				return
+			}
+			h.taint.waitTime = min(h.taint.waitTime*2, cfg.MaxWaitTime)
+			h.taint.removalTimer = time.AfterFunc(h.taint.waitTime, func() { h.expireTaint(cfg) })
+			h.config.Logger.Debug("still rate limited",
+				"name", h.config.Name, "path", h.config.Path,
+				"error", err, "retry_sec", h.taint.waitTime.Seconds())
+			return
+		}
+	}
+	h.RemoveTaint()
+}
+
+// TaintRateLimited taints after an HTTP 429; wait is the provider's hint (0 if none).
+func (h *HealthChecker) TaintRateLimited(wait time.Duration) {
+	cfg := rateLimitTaintConfig
+	cfg.Wait = wait
+	h.Taint(cfg)
 }
 
 // TaintHTTP is a convenience method that uses the HTTP-specific taint configuration
