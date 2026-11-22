@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	jsonv2 "encoding/json/v2"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -270,4 +272,34 @@ func TestHealthCheckerConcurrentTaint(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestHealthCheckTaintDetailNamesTheRealRequest(t *testing.T) {
+	forbidden := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer forbidden.Close()
+	wsURL := "ws" + strings.TrimPrefix(forbidden.URL, "http")
+
+	for _, tc := range []struct {
+		chain, conn, url, want string
+	}{
+		{"solana", "websocket", wsURL, "slotSubscribe: websocket: bad handshake (HTTP 403)"},
+		{"solana", "http", forbidden.URL, "getSlot: "},
+		{"tron", "http", forbidden.URL, "wallet/getnowblock: "},
+		{"evm", "http", forbidden.URL, "eth_blockNumber: "},
+		{"evm", "websocket", wsURL, "eth_blockNumber: websocket: bad handshake (HTTP 403)"},
+	} {
+		var logs bytes.Buffer
+		hc := NewHealthChecker(HealthCheckerConfig{
+			Logger: slog.New(slog.NewTextHandler(&logs, nil)), URL: tc.url, Name: "p",
+			Timeout: time.Second, Path: t.Name() + tc.chain + tc.conn, ChainType: tc.chain, ConnectionType: tc.conn,
+		})
+		hc.CheckAndSetHealth()
+		assert.True(t, hc.IsTainted(), "%s/%s", tc.chain, tc.conn)
+		assert.Contains(t, logs.String(), tc.want, "%s/%s", tc.chain, tc.conn)
+		if tc.chain != "evm" {
+			assert.NotContains(t, logs.String(), "eth_", "%s/%s must not mention EVM methods", tc.chain, tc.conn)
+		}
+	}
 }

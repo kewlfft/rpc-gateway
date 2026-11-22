@@ -235,6 +235,19 @@ func (h *HealthChecker) checkEVMBlockNumberViaWebSocket(conn *websocket.Conn) (u
 	return blockNumber, nil
 }
 
+// blockCheckMethod names the request checkBlockNumber makes, for logs.
+func (h *HealthChecker) blockCheckMethod() string {
+	switch {
+	case h.config.ChainType == "solana" && h.config.ConnectionType == "websocket":
+		return "slotSubscribe"
+	case h.config.ChainType == "solana":
+		return "getSlot"
+	case h.config.ChainType == "tron":
+		return "wallet/getnowblock"
+	}
+	return "eth_blockNumber"
+}
+
 func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 	var blockNumber uint64
 
@@ -250,17 +263,10 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 
 		conn, resp, err := dialer.DialContext(ctx, h.config.URL, nil)
 		if err != nil {
-			// Log health check failure concisely - these are expected during provider outages
-			var statusCode int
+			// The status says why a handshake failed (e.g. 403 IP blocked, 429 rate limited)
 			if resp != nil {
-				statusCode = resp.StatusCode
+				return 0, fmt.Errorf("%w (HTTP %d)", err, resp.StatusCode)
 			}
-			h.config.Logger.Info("WebSocket health check failed",
-				"error", err,
-				"provider", h.config.Name,
-				"path", h.config.Path,
-				"status", statusCode,
-			)
 			return 0, err
 		}
 		defer conn.Close()
@@ -418,7 +424,7 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 
 	blockNumber, err := h.checkBlockNumber(ctx)
 	if err != nil {
-		h.TaintHealthCheck(fmt.Sprintf("eth_blockNumber: %v", err))
+		h.TaintHealthCheck(fmt.Sprintf("%s: %v", h.blockCheckMethod(), err))
 		return
 	}
 
