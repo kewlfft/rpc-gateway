@@ -3,6 +3,7 @@ package rpcgateway
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,12 +84,14 @@ func getProviderOrder(gateway *RPCGateway, path string) []string {
 	return names
 }
 
-func TestConfigWithLegacyMetricsSectionStillLoads(t *testing.T) {
-	path := t.TempDir() + "/config.yml"
-	require.NoError(t, os.WriteFile(path, []byte(`
+func TestConfigRejectsUnknownKeys(t *testing.T) {
+	write := func(content string) string {
+		path := t.TempDir() + "/config.yml"
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		return path
+	}
+	valid := `
 port: "3000"
-metrics:
-  port: 9010
 proxies:
   - path: eth
     timeout: 1s
@@ -97,8 +100,16 @@ proxies:
         connection:
           http:
             url: http://p1
-`), 0o600))
-	gateway, err := NewRPCGatewayFromConfigFile(path)
+`
+	gateway, err := NewRPCGatewayFromConfigFile(write(valid))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"p1"}, getProviderOrder(gateway, "eth"))
+
+	// The removed metrics section is now an error
+	_, err = NewRPCGatewayFromConfigFile(write(valid + "metrics:\n  port: 9010\n"))
+	assert.ErrorContains(t, err, "field metrics not found")
+
+	// So is a typo in a nested key
+	_, err = NewRPCGatewayFromConfigFile(write(strings.Replace(valid, "timeout:", "timout:", 1)))
+	assert.ErrorContains(t, err, "field timout not found")
 }

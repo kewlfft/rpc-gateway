@@ -72,7 +72,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 			})
 
 			checker.SetBlockNumberUpdateCallback(func(blockNumber uint64) {
-				hcm.checkBlockLagAndTaint(target.Name, blockNumber)
+				hcm.checkBlockLagAndTaint(checker, blockNumber)
 			})
 
 			checkers = append(checkers, checker)
@@ -106,31 +106,19 @@ func (h *HealthCheckManager) GetHealthChecker(name string, connectionType string
 
 // checkBlockLagAndTaint checks if a provider's block number is lagging behind others
 // Optimized to find max block and target checker in a single pass
-func (h *HealthCheckManager) checkBlockLagAndTaint(updatedRPCName string, updatedBlockNumber uint64) {
+// The updated checker itself is tainted, so HTTP and WebSocket endpoints of the
+// same provider are judged separately.
+func (h *HealthCheckManager) checkBlockLagAndTaint(updated *HealthChecker, updatedBlockNumber uint64) {
 	var maxBlock uint64
-	var targetChecker *HealthChecker
-
-	// Find the maximum block number and target checker in a single pass
 	for _, checker := range h.checkers {
-		bn := checker.BlockNumber()
-		if bn > maxBlock {
-			maxBlock = bn
-		}
-		// Also find the target checker while we're iterating
-		if checker.Name() == updatedRPCName {
-			targetChecker = checker
-		}
+		maxBlock = max(maxBlock, checker.BlockNumber())
 	}
 
-	// If the updated provider is too far behind, taint it
-	// Equivalent to: maxBlock > updatedBlockNumber && (maxBlock-updatedBlockNumber) > threshold
-	if maxBlock > updatedBlockNumber+uint64(h.config.BlockDiffThreshold) {
-		// Taint the specific provider (already found in loop above)
-		if targetChecker != nil {
-			targetChecker.TaintHealthCheck(fmt.Sprintf(
-				"block lag: block=%d max=%d threshold=%d",
-				updatedBlockNumber, maxBlock, h.config.BlockDiffThreshold,
-			))
-		}
+	// Equivalent to: maxBlock - updatedBlockNumber > threshold, without underflow
+	if maxBlock > updatedBlockNumber+h.config.BlockDiffThreshold {
+		updated.TaintHealthCheck(fmt.Sprintf(
+			"block lag: block=%d max=%d threshold=%d",
+			updatedBlockNumber, maxBlock, h.config.BlockDiffThreshold,
+		))
 	}
 }

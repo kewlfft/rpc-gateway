@@ -8,6 +8,8 @@ A high-performance RPC gateway that provides load balancing and health checking 
 - Health checking with automatic failover
 - Support for multiple chains
 - Configurable timeouts and intervals
+- Request bodies are limited to 16 MiB (larger requests get HTTP 413)
+- Unknown config keys are rejected at startup
 
 ## Configuration
 

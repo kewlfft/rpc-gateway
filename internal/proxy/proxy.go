@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,9 +83,71 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 	return statusCode < 200 || statusCode >= 300
 }
 
+// isHopByHop reports whether a canonical header key applies to a single connection
+// and must not be forwarded by a proxy (RFC 9110 section 7.6.1).
+func isHopByHop(key string) bool {
+	switch key {
+	case "Connection", "Keep-Alive", "Proxy-Connection", "Proxy-Authenticate",
+		"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+		return true
+	}
+	return false
+}
+
+// withoutHopByHop returns h, or a copy of h without hop-by-hop headers (including
+// any listed in Connection) if it has any. h itself is never modified.
+func withoutHopByHop(h http.Header) http.Header {
+	has := false
+	for k := range h { // a handful of keys: cheaper than probing each hop-by-hop name
+		if isHopByHop(k) {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return h
+	}
+	out := h.Clone()
+	for _, v := range out["Connection"] {
+		for name := range strings.SplitSeq(v, ",") {
+			out.Del(strings.TrimSpace(name))
+		}
+	}
+	for k := range out {
+		if isHopByHop(k) {
+			delete(out, k)
+		}
+	}
+	return out
+}
+
+// isClientError reports whether an upstream status most likely reflects a bad
+// request rather than a bad provider. Such responses fail over without tainting.
+func isClientError(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusMethodNotAllowed, http.StatusRequestEntityTooLarge,
+		http.StatusRequestURITooLong, http.StatusUnsupportedMediaType,
+		http.StatusUnprocessableEntity, http.StatusRequestHeaderFieldsTooLarge:
+		return true
+	}
+	return false
+}
+
+// joinQuery appends the client's query to the provider URL's own query, so
+// provider credentials passed as query parameters are kept.
+func joinQuery(provider, client string) string {
+	switch {
+	case provider == "":
+		return client
+	case client == "":
+		return provider
+	}
+	return provider + "&" + client
+}
+
 // copyResponse copies headers, status code, and body from the source response to the target response writer
 func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
-	maps.Copy(w.Header(), resp.Header)
+	maps.Copy(w.Header(), withoutHopByHop(resp.Header))
 	w.WriteHeader(resp.StatusCode)
 
 	// Stream the response body directly
@@ -154,7 +217,9 @@ const (
 )
 
 // forwardRequest handles both standard and Tron requests with direct streaming
-func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) forwardResult {
+// header is the client's header without hop-by-hop fields; it must not be modified.
+// If last is set, a client-error response is returned to the client instead of failing over.
+func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header http.Header, body []byte, start time.Time, target *NodeProvider, urlPath string, last bool) forwardResult {
 	name := target.Name()
 
 	// Create a new context with timeout for this specific request to avoid context cancellation cascade
@@ -174,17 +239,17 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 		return forwardRetry
 	}
 
-	req.URL.RawQuery = r.URL.RawQuery
+	req.URL.RawQuery = joinQuery(req.URL.RawQuery, r.URL.RawQuery)
 
 	customHeaders := target.config.Connection.HTTP.Headers
 	if len(customHeaders) == 0 && req.URL.User == nil {
 		// Nothing to add: forward the client's headers as-is. The transport never
-		// modifies request headers, so sharing r.Header is safe and saves a copy.
-		req.Header = r.Header
+		// modifies request headers, so sharing the map is safe and saves a copy.
+		req.Header = header
 	} else {
-		// Copy so provider-specific headers never leak into r.Header, which is
-		// reused when failing over to the next provider
-		maps.Copy(req.Header, r.Header)
+		// Copy so provider-specific headers never leak into the shared header,
+		// which is reused when failing over to the next provider
+		maps.Copy(req.Header, header)
 		for key, value := range customHeaders {
 			req.Header.Set(key, value)
 		}
@@ -218,8 +283,19 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 	}
 	defer resp.Body.Close()
 
+	// A bad request (e.g. a GET, malformed JSON) gets the same answer from every
+	// provider: try the next one without tainting, and hand the last answer back.
+	if isClientError(resp.StatusCode) && !last {
+		p.logger.Debug("provider rejected request as client error, trying next",
+			"provider", name,
+			"status", resp.StatusCode,
+			"method", r.Method,
+			"path", p.hcm.path)
+		return forwardRetry
+	}
+
 	// Check for non-2xx status codes
-	if p.HasNodeProviderFailed(resp.StatusCode) {
+	if p.HasNodeProviderFailed(resp.StatusCode) && !isClientError(resp.StatusCode) {
 		p.logger.Error("Provider returned error status",
 			"provider", name,
 			"status", resp.StatusCode,
@@ -265,7 +341,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var bodyBytes []byte
 	if !isWebSocket {
 		var err error
-		bodyBytes, err = readBody(r)
+		bodyBytes, err = readBody(w, r)
+		if errors.As(err, new(*http.MaxBytesError)) {
+			rpcerrors.WriteJSONRPCError(w, r, fmt.Sprintf("Request body exceeds %d bytes", MaxRequestBodySize), http.StatusRequestEntityTooLarge, nil)
+			return
+		}
 		if err != nil {
 			p.logger.Error("failed to read request body",
 				"error", err,
@@ -285,8 +365,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, target := range healthyProviders {
+	var header http.Header
+	if !isWebSocket {
+		header = withoutHopByHop(r.Header)
+	}
+
+	for i, target := range healthyProviders {
 		name := target.Name()
+
+		// Client gone: don't fail over (or taint) on its behalf
+		if i > 0 && r.Context().Err() != nil {
+			return
+		}
 
 		if isWebSocket {
 			wsProxy := target.GetWebSocketProxy()
@@ -294,8 +384,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			// Create upstream connection BEFORE upgrading (upgrade commits HTTP response)
-			// If this fails, we can try next provider without committing to the client
+			// Dial upstream BEFORE upgrading (the upgrade commits the HTTP response),
+			// so a failed dial can still fail over to the next provider
 			targetConn := wsProxy.createNewConnection()
 			if targetConn == nil {
 				if hc := target.HealthChecker(connType); hc != nil {
@@ -306,20 +396,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"total_providers", len(healthyProviders))
 				continue
 			}
-			// Close test connection - the real one is created in ServeHTTP
-			targetConn.Close()
-
-			// Connection successful - safe to upgrade
-			wsProxy.ServeHTTP(w, r)
+			// Connected - safe to upgrade; the proxy takes over targetConn
+			wsProxy.serve(w, r, targetConn)
 			return
 		}
 
 		url := target.config.Connection.HTTP.URL
 		if p.chainType == "tron" {
-			url += r.URL.Path
+			// Escaped form, so encoded characters (e.g. %3F) keep their meaning
+			url += r.URL.EscapedPath()
 		}
 
-		if p.forwardRequest(w, r, bodyBytes, start, target, url) == forwardDone {
+		last := i == len(healthyProviders)-1
+		if p.forwardRequest(w, r, header, bodyBytes, start, target, url, last) == forwardDone {
 			return
 		}
 	}
@@ -328,10 +417,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rpcerrors.WriteJSONRPCError(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
 }
 
-// readBody reads and closes the request body, sizing the buffer from
-// Content-Length when known to avoid repeated growth.
-func readBody(r *http.Request) ([]byte, error) {
+// MaxRequestBodySize caps HTTP request bodies (16 MiB: far above blob transactions
+// or large batches), so a client cannot make the gateway buffer unbounded data.
+const MaxRequestBodySize = 16 << 20
+
+// readBody reads and closes the request body, up to MaxRequestBodySize, sizing
+// the buffer from Content-Length when known to avoid repeated growth.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	defer r.Body.Close()
+	if r.ContentLength > MaxRequestBodySize {
+		return nil, &http.MaxBytesError{Limit: MaxRequestBodySize}
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodySize)
 	if n := r.ContentLength; n > 0 && n <= maxPresizedBody {
 		// net/http caps the body at Content-Length, so an exact-size read suffices
 		buf := make([]byte, n)

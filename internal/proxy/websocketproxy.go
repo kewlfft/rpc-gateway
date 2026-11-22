@@ -10,10 +10,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const (
-	bufferSize   = 16384
-	pingInterval = 15 * time.Second
-)
+const bufferSize = 16384
+
+// pingInterval is how often both sides of a proxied WebSocket are pinged (var for tests).
+var pingInterval = 15 * time.Second
 
 // upstreamCloseInfo contains error and whether it's a graceful close from upstream
 type upstreamCloseInfo struct {
@@ -43,7 +43,20 @@ func NewWebSocketProxy(targetURL string, timeout time.Duration, logger *slog.Log
 	}
 }
 
+// ServeHTTP dials upstream, then upgrades the client and pipes the two.
 func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	targetConn := p.createNewConnection()
+	if targetConn == nil {
+		http.Error(w, "upstream WebSocket unavailable", http.StatusBadGateway)
+		return
+	}
+	p.serve(w, r, targetConn)
+}
+
+// serve upgrades the client and pipes it to the already-dialed upstream
+// connection, which it takes ownership of.
+func (p *WebSocketProxy) serve(w http.ResponseWriter, r *http.Request, targetConn *websocket.Conn) {
+	defer targetConn.Close()
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		p.logger.Error("websocket upgrade failed", "error", err)
@@ -51,14 +64,16 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	// Dedicated upstream connection for this client
-	targetConn := p.createNewConnection()
-	if targetConn == nil {
-		p.logger.Error("failed to create target connection",
-			"target_url", p.targetURL)
-		return
+	// Detect dead peers: pings go out every pingInterval, and each pong or message
+	// pushes the read deadline out. A peer silent for longer than readTimeout is
+	// dropped instead of leaving the other side waiting forever.
+	readTimeout := 2*pingInterval + p.timeout
+	for _, c := range []*websocket.Conn{clientConn, targetConn} {
+		_ = c.SetReadDeadline(time.Now().Add(readTimeout))
+		c.SetPongHandler(func(string) error {
+			return c.SetReadDeadline(time.Now().Add(readTimeout))
+		})
 	}
-	defer targetConn.Close()
 
 	// Buffer of 3 to handle errors from 2 pipes + ping goroutine without blocking
 	errCh := make(chan upstreamCloseInfo, 3)
@@ -74,6 +89,9 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		for {
 			mt, reader, err := src.NextReader()
+			if err == nil {
+				err = src.SetReadDeadline(time.Now().Add(readTimeout))
+			}
 			if err != nil {
 				// A close frame from upstream is a graceful close to forward to the client
 				// (IsCloseError with no codes always returns false, so check the type)
@@ -101,12 +119,18 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go pipe(clientConn, targetConn, "client->target")
 	go pipe(targetConn, clientConn, "target->client")
 
-	// Periodic ping to keep both connections alive
-	ticker := time.NewTicker(pingInterval)
-	defer ticker.Stop()
-
+	// Periodic ping to keep both connections alive; stops when serve returns
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		for range ticker.C {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
 			deadline := time.Now().Add(p.timeout)
 			if err := clientConn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
 				errCh <- upstreamCloseInfo{err: err, isGracefulClose: false}

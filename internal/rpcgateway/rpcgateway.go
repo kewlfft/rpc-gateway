@@ -1,9 +1,11 @@
 package rpcgateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -162,6 +164,10 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 				trimmed = "/"
 			}
 			r.URL.Path = trimmed
+			// Keep the escaped form consistent with Path (used for tron upstream paths)
+			if r.URL.RawPath != "" {
+				r.URL.RawPath = strings.TrimPrefix(r.URL.RawPath, pathPrefix)
+			}
 			p.ServeHTTP(w, r)
 		}
 
@@ -191,10 +197,13 @@ func NewRPCGatewayFromConfigFile(s string) (*RPCGateway, error) {
 		return nil, err
 	}
 
+	// Strict decoding: unknown keys (typos, removed options such as "metrics")
+	// are errors instead of being silently ignored
 	var config RPCGatewayConfig
-
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, err
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&config); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("invalid config %s: %w", s, err)
 	}
 
 	paths := make([]string, 0, len(config.Proxies))

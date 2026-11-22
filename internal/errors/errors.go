@@ -3,6 +3,7 @@ package errors
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	jsonv2 "encoding/json/v2"
 )
@@ -15,7 +16,9 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 	var requestID any
 
 	// Extract request ID from body bytes if provided
-	if len(bodyBytes) > 0 && r.Header.Get("Content-Type") == "application/json" {
+	// Media type only: "application/json; charset=utf-8" is JSON too
+	mediaType, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	if len(bodyBytes) > 0 && strings.EqualFold(strings.TrimSpace(mediaType), "application/json") {
 		var req map[string]any
 		if jsonv2.Unmarshal(bodyBytes, &req) == nil && req["jsonrpc"] != nil {
 			requestID = req["id"]
