@@ -45,16 +45,6 @@ func NewWebSocketProxy(targetURL string, timeout time.Duration, logger *slog.Log
 	}
 }
 
-// ServeHTTP dials upstream, then upgrades the client and pipes the two.
-func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	targetConn := p.createNewConnection()
-	if targetConn == nil {
-		http.Error(w, "upstream WebSocket unavailable", http.StatusBadGateway)
-		return
-	}
-	p.serve(w, r, targetConn)
-}
-
 // serve upgrades the client and pipes it to the already-dialed upstream
 // connection, which it takes ownership of.
 func (p *WebSocketProxy) serve(w http.ResponseWriter, r *http.Request, targetConn *websocket.Conn) {

@@ -63,5 +63,5 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("received shutdown signal")
-	service.Stop(context.Background())
+	service.Stop()
 }

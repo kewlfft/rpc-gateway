@@ -1,8 +1,6 @@
 package proxy
 
 import (
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,9 +38,7 @@ func TestWebSocketProxy_PipesBothWaysAndForwardsClose(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	wsProxy := NewWebSocketProxy("ws"+strings.TrimPrefix(upstream.URL, "http"), 3*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	gateway := httptest.NewServer(wsProxy)
-	defer gateway.Close()
+	gateway := wsGateway(t, upstream.URL)
 
 	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http"), nil)
 	if err != nil {

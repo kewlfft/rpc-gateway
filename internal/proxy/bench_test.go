@@ -110,9 +110,7 @@ func BenchmarkWebSocketNotifications(b *testing.B) {
 	}))
 	defer upstream.Close()
 
-	wsProxy := NewWebSocketProxy("ws"+strings.TrimPrefix(upstream.URL, "http"), createConfig().Timeout, benchLogger)
-	gateway := httptest.NewServer(wsProxy)
-	defer gateway.Close()
+	gateway := wsGateway(b, upstream.URL)
 
 	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http"), nil)
 	if err != nil {

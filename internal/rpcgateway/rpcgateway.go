@@ -59,7 +59,7 @@ func isUnexpectedServerError(err error) bool {
 	return err != nil && !errors.Is(err, http.ErrServerClosed)
 }
 
-func (r *RPCGateway) Stop(c context.Context) {
+func (r *RPCGateway) Stop() {
 	slog.Info("shutting down rpc-gateway")
 
 	// Stop main server
@@ -69,7 +69,7 @@ func (r *RPCGateway) Stop(c context.Context) {
 
 	// Stop health check managers last
 	for _, p := range r.proxies {
-		p.GetHealthCheckManager().Stop(c)
+		p.GetHealthCheckManager().Stop()
 	}
 
 	slog.Info("rpc-gateway shutdown complete")

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // mockEVMHealthRPC responds to eth_blockNumber and the SHA-256 precompile eth_call probe.
@@ -190,7 +189,7 @@ func TestHealthCheckerTaintRemoval(t *testing.T) {
 	assert.True(t, checker.IsTainted(), "should be tainted after taint call")
 
 	// Stop the checker
-	require.NoError(t, checker.Stop(t.Context()))
+	checker.Stop()
 
 	// Verify taint removal timer is cleaned up
 	time.Sleep(time.Millisecond * 100)

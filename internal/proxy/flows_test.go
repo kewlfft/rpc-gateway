@@ -215,7 +215,7 @@ func wsUpstream(t *testing.T, silent bool) (*httptest.Server, *atomic.Int32) {
 
 // wsGateway serves a Proxy with one WebSocket target; an optional ping interval
 // overrides the default for that proxy only.
-func wsGateway(t *testing.T, upstreamURL string, ping ...time.Duration) *httptest.Server {
+func wsGateway(t testing.TB, upstreamURL string, ping ...time.Duration) *httptest.Server {
 	config := createConfig()
 	config.Path = t.Name()
 	config.Timeout = 200 * time.Millisecond

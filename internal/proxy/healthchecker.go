@@ -176,10 +176,6 @@ func NewHealthChecker(config HealthCheckerConfig) *HealthChecker {
 	return h
 }
 
-func (h *HealthChecker) Name() string {
-	return h.config.Name
-}
-
 // checkSolanaSlotViaWebSocket performs Solana slot subscription via WebSocket
 func (h *HealthChecker) checkSolanaSlotViaWebSocket(conn *websocket.Conn) (uint64, error) {
 	if err := conn.WriteJSON(map[string]any{
@@ -501,14 +497,13 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 }
 
 // Stop cancels a pending taint removal. The check loop itself ends with Start's context.
-func (h *HealthChecker) Stop(_ context.Context) error {
+func (h *HealthChecker) Stop() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.taint.removalTimer != nil {
 		h.taint.removalTimer.Stop()
 		h.taint.removalTimer = nil
 	}
-	return nil
 }
 
 func (h *HealthChecker) IsHealthy() bool {

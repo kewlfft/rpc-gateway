@@ -3,18 +3,14 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 )
 
 // HealthCheckManager manages health checks for multiple node providers
 type HealthCheckManager struct {
 	config   HealthCheckConfig
-	logger   *slog.Logger
 	checkers []*HealthChecker
 	path     string
-	// Add initial delay for path-level staggering
-	initialDelay time.Duration
 	// O(1) health checker lookups; written only during construction
 	checkerMap map[string]*HealthChecker // key: "name:connectionType"
 }
@@ -25,12 +21,9 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 
 	// Create the manager first so we can use it in the callbacks
 	hcm := &HealthCheckManager{
-		config: config.HealthChecks,
-		logger: config.Logger,
-		path:   config.Path,
-		// Use incremental staggering
-		initialDelay: time.Duration(config.PathIndex*1000) * time.Millisecond,
-		checkerMap:   make(map[string]*HealthChecker),
+		config:     config.HealthChecks,
+		path:       config.Path,
+		checkerMap: make(map[string]*HealthChecker),
 	}
 
 	for _, target := range config.Targets {
@@ -53,7 +46,8 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				continue
 			}
 
-			initialDelay := hcm.initialDelay
+			// Stagger paths by 1 s each so their checks don't all fire at once
+			initialDelay := time.Duration(config.PathIndex) * time.Second
 			if conn.connType == "websocket" {
 				initialDelay += 500 * time.Millisecond // Stagger WebSocket after HTTP checks
 			}
@@ -93,9 +87,9 @@ func (h *HealthCheckManager) Start(ctx context.Context) {
 }
 
 // Stop cancels pending taint removals of all health checkers
-func (h *HealthCheckManager) Stop(ctx context.Context) {
+func (h *HealthCheckManager) Stop() {
 	for _, checker := range h.checkers {
-		_ = checker.Stop(ctx)
+		checker.Stop()
 	}
 }
 
