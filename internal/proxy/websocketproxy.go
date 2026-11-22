@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"maps"
@@ -10,6 +9,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	jsonv2 "encoding/json/v2"
 
 	"github.com/gorilla/websocket"
 )
@@ -147,7 +148,7 @@ func (p *WebSocketProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else if direction == "target->client" {
 				// Parse once and reuse for both tracking and error logging
 				var msg map[string]any
-				if err := json.Unmarshal(msgBytes, &msg); err == nil {
+				if err := jsonv2.Unmarshal(msgBytes, &msg); err == nil {
 					p.trackSubscriptionResponse(msg, connectionSubscriptions, pendingSubscriptionRequests)
 					p.logJSONRPCError(msg)
 				}
@@ -253,7 +254,7 @@ func (p *WebSocketProxy) UnsubscribeAll() {
 func (p *WebSocketProxy) trackSubscriptionFromMessage(msgBytes []byte, connectionSubscriptions map[string]bool, pendingSubscriptionRequests map[any]bool) {
 	// Parse JSON-RPC message
 	var msg map[string]any
-	if err := json.Unmarshal(msgBytes, &msg); err != nil {
+	if err := jsonv2.Unmarshal(msgBytes, &msg); err != nil {
 		return // Not a valid JSON message
 	}
 

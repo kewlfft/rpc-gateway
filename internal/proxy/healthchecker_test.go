@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,7 +22,7 @@ func mockEVMHealthRPC(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Method string `json:"method"`
 	}
-	_ = json.Unmarshal(body, &req)
+	_ = jsonv2.Unmarshal(body, &req)
 
 	w.Header().Set("Content-Type", "application/json")
 	switch req.Method {

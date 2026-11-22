@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
@@ -196,7 +195,7 @@ func (h *HealthChecker) Name() string {
 // checkSolanaSlotViaWebSocket performs Solana slot subscription via WebSocket
 func (h *HealthChecker) checkSolanaSlotViaWebSocket(conn *websocket.Conn) (uint64, error) {
 	if err := conn.WriteJSON(map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe", "params": json.RawMessage("[]"),
+		"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe", "params": []any{},
 	}); err != nil {
 		return 0, fmt.Errorf("slotSubscribe failed: %w", err)
 	}

@@ -3,7 +3,7 @@ package proxy
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,7 +38,7 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
-		_ = json.Unmarshal(body, &req)
+		_ = jsonv2.Unmarshal(body, &req)
 
 		// Handle health check requests
 		if method, ok := req["method"].(string); ok {
@@ -63,7 +63,7 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 	fakeRPC2Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
-		_ = json.Unmarshal(body, &req)
+		_ = jsonv2.Unmarshal(body, &req)
 
 		// Handle health check requests
 		if method, ok := req["method"].(string); ok {
@@ -127,7 +127,7 @@ func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
-		_ = json.Unmarshal(body, &req)
+		_ = jsonv2.Unmarshal(body, &req)
 
 		// Handle health check requests
 		if method, ok := req["method"].(string); ok {
@@ -224,7 +224,7 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 		if contentEncoding != "gzip" {
 			// Likely a health check request - try to parse as JSON
 			var req map[string]any
-			if err := json.Unmarshal(body, &req); err == nil {
+			if err := jsonv2.Unmarshal(body, &req); err == nil {
 				if method, ok := req["method"].(string); ok {
 					switch method {
 					case "eth_blockNumber":
@@ -368,7 +368,7 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 	fakeRPCServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
-		_ = json.Unmarshal(body, &req)
+		_ = jsonv2.Unmarshal(body, &req)
 
 		// Handle health check requests
 		if method, ok := req["method"].(string); ok {
@@ -436,7 +436,7 @@ func TestTronProxyURLRedirection(t *testing.T) {
 		receivedHeaders = r.Header
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
-		_ = json.Unmarshal(body, &req)
+		_ = jsonv2.Unmarshal(body, &req)
 		if method, ok := req["method"].(string); ok {
 			receivedMethod = method
 		} else {
@@ -536,7 +536,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 
 		var response map[string]any
-		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		err = jsonv2.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
 		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
 	})
@@ -598,7 +598,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 
 		var response map[string]any
-		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		err = jsonv2.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
 		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
 	})
@@ -608,7 +608,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]any
-			json.Unmarshal(body, &req)
+			jsonv2.Unmarshal(body, &req)
 
 			// Handle health check requests successfully
 			if method, ok := req["method"].(string); ok {
@@ -632,7 +632,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]any
-			json.Unmarshal(body, &req)
+			jsonv2.Unmarshal(body, &req)
 
 			// Handle health check requests successfully
 			if method, ok := req["method"].(string); ok {
@@ -703,7 +703,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code, "Expected 503 when all providers fail")
 
 		var response map[string]any
-		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		err = jsonv2.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
 		require.NotNil(t, response["error"], "Response should have error field")
 		assert.Contains(t, response["error"].(map[string]any)["message"].(string), "All providers failed")
@@ -765,7 +765,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 
 		var response map[string]any
-		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		err = jsonv2.Unmarshal(rr.Body.Bytes(), &response)
 		require.NoError(t, err)
 		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
 	})
