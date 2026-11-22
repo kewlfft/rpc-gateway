@@ -54,6 +54,4 @@ type Config struct {
 	Logger *slog.Logger
 	// Index of the path for incremental staggering of health checks
 	PathIndex int
-	// When false, skip Prometheus recording on the request hot path
-	MetricsEnabled bool
 }

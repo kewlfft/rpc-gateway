@@ -1,11 +1,11 @@
 package rpcgateway
 
 import (
+	"os"
 	"slices"
 	"testing"
 	"time"
 
-	"github.com/kewlfft/rpc-gateway/internal/metrics"
 	"github.com/kewlfft/rpc-gateway/internal/proxy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,8 +13,7 @@ import (
 
 func TestProviderRandomization(t *testing.T) {
 	config := RPCGatewayConfig{
-		Port:    "3000",
-		Metrics: metrics.Config{Port: 9010},
+		Port: "3000",
 		Proxies: []ProxyConfig{
 			{
 				Path:    "test",
@@ -76,11 +75,30 @@ func TestSetRandomizeProvidersShufflesOnlyOnce(t *testing.T) {
 }
 
 func getProviderOrder(gateway *RPCGateway, path string) []string {
-	proxy := gateway.proxies[path].(*proxy.Proxy)
-	targets := proxy.GetTargets()
+	targets := gateway.proxies[path].GetTargets()
 	names := make([]string, len(targets))
 	for i, t := range targets {
 		names[i] = t.Name()
 	}
 	return names
+}
+
+func TestConfigWithLegacyMetricsSectionStillLoads(t *testing.T) {
+	path := t.TempDir() + "/config.yml"
+	require.NoError(t, os.WriteFile(path, []byte(`
+port: "3000"
+metrics:
+  port: 9010
+proxies:
+  - path: eth
+    timeout: 1s
+    targets:
+      - name: p1
+        connection:
+          http:
+            url: http://p1
+`), 0o600))
+	gateway, err := NewRPCGatewayFromConfigFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"p1"}, getProviderOrder(gateway, "eth"))
 }

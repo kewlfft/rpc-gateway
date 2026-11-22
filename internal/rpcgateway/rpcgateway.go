@@ -12,9 +12,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/kewlfft/rpc-gateway/internal/metrics"
 	"github.com/kewlfft/rpc-gateway/internal/proxy"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 const (
@@ -26,58 +25,29 @@ const (
 
 type RPCGateway struct {
 	config  RPCGatewayConfig
-	proxies map[string]proxy.ChainTypeHandler
-	hcms    map[string]*proxy.HealthCheckManager
+	proxies map[string]*proxy.Proxy
 	server  *http.Server
-	metrics *metrics.Server
 }
 
 func (r *RPCGateway) Start(c context.Context) error {
-	// Check if ports are available
-	if err := checkPortAvailability(r.config.Port); err != nil {
-		return fmt.Errorf("rpc-gateway port not available: %w", err)
-	}
-	if r.config.Metrics.IsEnabled() {
-		portStr := fmt.Sprintf("%d", r.config.Metrics.Port)
-		if err := checkPortAvailability(portStr); err != nil {
-			return fmt.Errorf("metrics port not available: %w", err)
-		}
+	// Bind first so a busy port fails Start synchronously
+	ln, err := net.Listen("tcp", r.server.Addr)
+	if err != nil {
+		return fmt.Errorf("rpc-gateway port %s not available: %w", r.config.Port, err)
 	}
 
-	// Start all health check managers (Start is non-blocking)
-	for path, hcm := range r.hcms {
-		if err := hcm.Start(c); err != nil {
-			slog.Error("failed to start health check manager", "path", path, "error", err)
-		}
-	}
-
-	// Start metrics server if enabled
-	if r.config.Metrics.IsEnabled() {
-		go func() {
-			if err := r.metrics.Start(); isUnexpectedServerError(err) {
-				slog.Error("metrics server error", "error", err)
-			}
-		}()
+	// Start all health check managers (non-blocking)
+	for _, p := range r.proxies {
+		p.GetHealthCheckManager().Start(c)
 	}
 
 	// Start main server
 	go func() {
-		if err := r.server.ListenAndServe(); isUnexpectedServerError(err) {
+		if err := r.server.Serve(ln); isUnexpectedServerError(err) {
 			slog.Error("rpc-gateway server error", "error", err)
 		}
 	}()
 
-	return nil
-}
-
-// checkPortAvailability checks if a port is available for use
-func checkPortAvailability(port string) error {
-	addr := ":" + port
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("port %s is not available: %w", port, err)
-	}
-	defer ln.Close()
 	return nil
 }
 
@@ -87,8 +57,7 @@ func isUnexpectedServerError(err error) bool {
 	return err != nil && !errors.Is(err, http.ErrServerClosed)
 }
 
-func (r *RPCGateway) Stop(c context.Context) error {
-	// Stop servers in reverse order of dependency
+func (r *RPCGateway) Stop(c context.Context) {
 	slog.Info("shutting down rpc-gateway")
 
 	// Stop main server
@@ -96,22 +65,12 @@ func (r *RPCGateway) Stop(c context.Context) error {
 		slog.Error("error stopping rpc-gateway server", "error", err)
 	}
 
-	// Stop metrics server if enabled
-	if r.config.Metrics.IsEnabled() {
-		if err := r.metrics.Stop(); isUnexpectedServerError(err) {
-			slog.Error("error stopping metrics server", "error", err)
-		}
-	}
-
 	// Stop health check managers last
-	for _, hcm := range r.hcms {
-		if err := hcm.Stop(c); err != nil {
-			slog.Error("error stopping health check manager", "error", err)
-		}
+	for _, p := range r.proxies {
+		p.GetHealthCheckManager().Stop(c)
 	}
 
 	slog.Info("rpc-gateway shutdown complete")
-	return nil
 }
 
 func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
@@ -128,9 +87,7 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		logLevel = slog.LevelWarn // Default to warn
 	}
 
-	// Initialize maps for proxies and health check managers with known capacity
-	proxies := make(map[string]proxy.ChainTypeHandler, len(config.Proxies))
-	hcms := make(map[string]*proxy.HealthCheckManager, len(config.Proxies))
+	proxies := make(map[string]*proxy.Proxy, len(config.Proxies))
 
 	logger := slog.New(
 		slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
@@ -159,14 +116,13 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 
 		// Create proxy configuration
 		proxyCfg := proxy.Config{
-			Path:           proxyConfig.Path,
-			ChainType:      proxyConfig.ChainType,
-			Timeout:        timeout,
-			HealthChecks:   proxyConfig.HealthChecks,
-			Targets:        proxyConfig.Targets,
-			Logger:         logger,
-			PathIndex:      i, // Pass the path index for incremental staggering
-			MetricsEnabled: config.Metrics.IsEnabled(),
+			Path:         proxyConfig.Path,
+			ChainType:    proxyConfig.ChainType,
+			Timeout:      timeout,
+			HealthChecks: proxyConfig.HealthChecks,
+			Targets:      proxyConfig.Targets,
+			Logger:       logger,
+			PathIndex:    i, // Pass the path index for incremental staggering
 		}
 
 		// Create proxy
@@ -176,7 +132,6 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 		}
 
 		proxies[proxyConfig.Path] = p
-		hcms[proxyConfig.Path] = p.GetHealthCheckManager()
 	}
 
 	// Randomize providers if enabled
@@ -218,8 +173,6 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 	return &RPCGateway{
 		config:  config,
 		proxies: proxies,
-		hcms:    hcms,
-		metrics: metrics.NewServer(config.Metrics),
 		server: &http.Server{
 			Addr:              ":" + config.Port,
 			Handler:           r,

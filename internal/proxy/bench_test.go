@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gorilla/websocket"
@@ -41,12 +43,11 @@ func (w *discardWriter) Header() http.Header         { return w.h }
 func (w *discardWriter) Write(b []byte) (int, error) { return len(b), nil }
 func (w *discardWriter) WriteHeader(int)             {}
 
-func newBenchProxy(b *testing.B, metrics bool) *Proxy {
+func newBenchProxy(b *testing.B) *Proxy {
 	b.Helper()
 	config := createConfig()
-	config.Path = fmt.Sprintf("bench-%s-%t", b.Name(), metrics)
+	config.Path = "bench-" + b.Name()
 	config.Logger = benchLogger
-	config.MetricsEnabled = metrics
 	for i := range 3 {
 		config.Targets = append(config.Targets, NodeProviderConfig{
 			Name:       fmt.Sprintf("p%d", i),
@@ -57,12 +58,12 @@ func newBenchProxy(b *testing.B, metrics bool) *Proxy {
 	if err != nil {
 		b.Fatal(err)
 	}
-	p.client = &http.Client{Transport: memTransport{}}
+	p.transport = memTransport{}
 	return p
 }
 
-func benchmarkServeHTTP(b *testing.B, metrics bool) {
-	p := newBenchProxy(b, metrics)
+func BenchmarkServeHTTP(b *testing.B) {
+	p := newBenchProxy(b)
 	body := []byte(benchReqBody)
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
@@ -75,9 +76,6 @@ func benchmarkServeHTTP(b *testing.B, metrics bool) {
 		}
 	})
 }
-
-func BenchmarkServeHTTP(b *testing.B)        { benchmarkServeHTTP(b, false) }
-func BenchmarkServeHTTPMetrics(b *testing.B) { benchmarkServeHTTP(b, true) }
 
 // BenchmarkWebSocketNotifications measures proxying upstream subscription
 // notifications (newHeads-sized) to a client through WebSocketProxy.
@@ -133,4 +131,65 @@ func BenchmarkWebSocketNotifications(b *testing.B) {
 	}
 	b.StopTimer()
 	close(start)
+}
+
+// BenchmarkServeHTTPLoopback runs the full path: client -> gateway http.Server ->
+// Proxy -> pooled transport -> upstream http.Server, all over loopback.
+func BenchmarkServeHTTPLoopback(b *testing.B) {
+	var upstreamConns, gatewayConns atomic.Int64
+	countNew := func(n *atomic.Int64) func(net.Conn, http.ConnState) {
+		return func(_ net.Conn, s http.ConnState) {
+			if s == http.StateNew {
+				n.Add(1)
+			}
+		}
+	}
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(benchRespBody)
+	}))
+	upstream.Config.ConnState = countNew(&upstreamConns)
+	upstream.Start()
+	defer upstream.Close()
+
+	config := createConfig()
+	config.Path = "bench-loopback"
+	config.Logger = benchLogger
+	config.Targets = []NodeProviderConfig{{
+		Name:       "p0",
+		Connection: ConnectionConfig{HTTP: HTTPConnection{URL: upstream.URL}},
+	}}
+	p, err := NewProxy(config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	gateway := httptest.NewUnstartedServer(p)
+	gateway.Config.ConnState = countNew(&gatewayConns)
+	gateway.Start()
+	defer gateway.Close()
+
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 256}}
+	body := []byte(benchReqBody)
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			resp, err := client.Post(gateway.URL, "application/json", bytes.NewReader(body))
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				b.Errorf("status %d", resp.StatusCode)
+				return
+			}
+		}
+	})
+	b.StopTimer()
+	// Connections opened per request; should be ~0 when keep-alive pooling works
+	b.ReportMetric(float64(upstreamConns.Load())/float64(b.N), "upconns/op")
+	b.ReportMetric(float64(gatewayConns.Load())/float64(b.N), "gwconns/op")
 }

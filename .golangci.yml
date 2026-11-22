@@ -71,7 +71,6 @@ linters-settings:
           - github.com/ethereum/go-ethereum
           - github.com/gorilla/mux
           - github.com/pkg/errors
-          - github.com/prometheus/client_golang
           - github.com/stretchr/testify
           - github.com/slok/go-http-metrics
           - github.com/purini-to/zapmw

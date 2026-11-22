@@ -2,10 +2,7 @@ package proxy
 
 import (
 	"log/slog"
-	"net/http"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 type NodeProvider struct {
@@ -49,18 +46,6 @@ func (n *NodeProvider) IsHealthy(connType string) bool {
 
 func (n *NodeProvider) Name() string {
 	return n.config.Name
-}
-
-func (n *NodeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if websocket.IsWebSocketUpgrade(r) {
-		if n.wsProxy != nil {
-			n.wsProxy.ServeHTTP(w, r)
-		} else {
-			http.Error(w, "WebSocket not supported", http.StatusBadRequest)
-		}
-		return
-	}
-	http.Error(w, "HTTP requests handled by main proxy", http.StatusInternalServerError)
 }
 
 func (n *NodeProvider) GetWebSocketProxy() *WebSocketProxy {

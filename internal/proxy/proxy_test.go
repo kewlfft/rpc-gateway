@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,8 +33,6 @@ func createConfig() Config {
 }
 
 func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
-	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
@@ -122,8 +119,6 @@ func TestHttpFailoverProxyRerouteRequests(t *testing.T) {
 }
 
 func TestHttpFailoverProxyDecompressRequest(t *testing.T) {
-	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-
 	var receivedHeaderContentEncoding, receivedHeaderContentLength string
 	fakeRPC1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -363,8 +358,6 @@ func TestHttpFailoverProxyWithCompressionSupportedTarget(t *testing.T) {
 }
 
 func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
-	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-
 	var receivedBody []byte
 	fakeRPCServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -428,8 +421,6 @@ func TestHTTPFailoverProxyWhenCannotConnectToPrimaryProvider(t *testing.T) {
 }
 
 func TestTronProxyURLRedirection(t *testing.T) {
-	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-
 	var receivedPath, receivedMethod string
 	var receivedHeaders http.Header
 	fakeRPCServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -501,8 +492,6 @@ func TestTronProxyURLRedirection(t *testing.T) {
 }
 
 func TestAllProvidersFailingScenarios(t *testing.T) {
-	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-
 	t.Run("all providers have no HTTP health checkers", func(t *testing.T) {
 		config := createConfig()
 		config.Targets = []NodeProviderConfig{
@@ -575,8 +564,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 
 		// Start health check manager to trigger health checks
 		hcm := proxy.GetHealthCheckManager()
-		err = hcm.Start(t.Context())
-		require.NoError(t, err)
+		hcm.Start(t.Context())
 
 		// Wait a bit for health checks to run and taint providers
 		// Health checks have InitialDelay, so wait for that + a bit more
@@ -679,8 +667,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 
 		// Start health check manager
 		hcm := proxy.GetHealthCheckManager()
-		err = hcm.Start(t.Context())
-		require.NoError(t, err)
+		hcm.Start(t.Context())
 
 		// Wait for health checks to pass (providers should be healthy)
 		time.Sleep(2 * time.Second)
@@ -741,8 +728,7 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 
 		// Start health check manager
 		hcm := proxy.GetHealthCheckManager()
-		err = hcm.Start(t.Context())
-		require.NoError(t, err)
+		hcm.Start(t.Context())
 
 		// Wait for health checks to run
 		time.Sleep(2 * time.Second)
@@ -773,8 +759,6 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 }
 
 func TestProxyResponsesDoNotLeakInternalHeaders(t *testing.T) {
-	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
@@ -815,4 +799,47 @@ func TestProxyResponsesDoNotLeakInternalHeaders(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 	assert.Contains(t, rr.Body.String(), `"id":7`)
 	assert.Empty(t, rr.Header().Get("X-Status-Set"))
+}
+
+func TestProxyUpstreamHeaders(t *testing.T) {
+	type seen struct {
+		apiKey, auth, clientHdr string
+	}
+	var gotA, gotB seen
+	capture := func(dst *seen, status int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*dst = seen{r.Header.Get("X-Api-Key"), r.Header.Get("Authorization"), r.Header.Get("X-Client")}
+			if status != http.StatusOK {
+				w.Header().Set("Location", "/elsewhere")
+				w.WriteHeader(status)
+				return
+			}
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+		}))
+	}
+	// A redirects (must count as a failure, not be followed); B succeeds
+	a := capture(&gotA, http.StatusTemporaryRedirect)
+	defer a.Close()
+	b := capture(&gotB, http.StatusOK)
+	defer b.Close()
+
+	config := createConfig()
+	config.Path = "headers-test"
+	config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	config.Targets = []NodeProviderConfig{
+		{Name: "a", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: a.URL, Headers: map[string]string{"X-Api-Key": "key-a"}}}},
+		{Name: "b", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: strings.Replace(b.URL, "http://", "http://user:pass@", 1)}}},
+	}
+	p, err := NewProxy(config)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}`))
+	req.Header.Set("X-Client", "c1")
+	rr := httptest.NewRecorder()
+	p.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, seen{"key-a", "", "c1"}, gotA)
+	assert.Equal(t, seen{"", "Basic dXNlcjpwYXNz", "c1"}, gotB, "provider A's header must not leak to B; B gets URL basic auth")
+	assert.Empty(t, req.Header.Get("X-Api-Key"), "client request headers must not be modified")
 }

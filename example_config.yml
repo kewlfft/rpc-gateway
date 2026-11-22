@@ -1,6 +1,4 @@
 ---
-metrics:
-  port: 9010 # port for prometheus metrics, served on /metrics and /
 
 port: 4000 # port for RPC gateway
 

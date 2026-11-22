@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 )
 
@@ -14,10 +13,9 @@ type HealthCheckManager struct {
 	logger   *slog.Logger
 	checkers []*HealthChecker
 	path     string
-	mu       sync.RWMutex
 	// Add initial delay for path-level staggering
 	initialDelay time.Duration
-	// Add map for O(1) health checker lookups
+	// O(1) health checker lookups; written only during construction
 	checkerMap map[string]*HealthChecker // key: "name:connectionType"
 }
 
@@ -86,47 +84,24 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 	return hcm, nil
 }
 
-// Start starts the health check manager
-func (h *HealthCheckManager) Start(ctx context.Context) error {
+// Start starts all health checkers (non-blocking)
+func (h *HealthCheckManager) Start(ctx context.Context) {
 	// checker.Start is non-blocking; staggering is handled via each checker's InitialDelay
 	for _, checker := range h.checkers {
 		checker.Start(ctx)
 	}
-	return nil
 }
 
-// Stop stops the health check manager
-func (h *HealthCheckManager) Stop(ctx context.Context) error {
+// Stop cancels pending taint removals of all health checkers
+func (h *HealthCheckManager) Stop(ctx context.Context) {
 	for _, checker := range h.checkers {
-		if err := checker.Stop(ctx); err != nil {
-			h.logger.Error("failed to stop health checker", "error", err)
-		}
+		_ = checker.Stop(ctx)
 	}
-	return nil
 }
 
 // GetHealthChecker returns the health checker for a provider and connection type
 func (h *HealthCheckManager) GetHealthChecker(name string, connectionType string) *HealthChecker {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
 	return h.checkerMap[name+":"+connectionType]
-}
-
-// SetWebSocketProxyReferences sets the WebSocket proxy references for all WebSocket health checkers
-func (h *HealthCheckManager) SetWebSocketProxyReferences(wsProxies map[string]*WebSocketProxy) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	for name, wsProxy := range wsProxies {
-		if checker, exists := h.checkerMap[name+":websocket"]; exists {
-			checker.SetBeforeTaintCallback(func() {
-				wsProxy.UnsubscribeAll()
-			})
-			h.logger.Debug("WebSocket proxy reference set",
-				"provider", name, "path", h.path)
-		}
-	}
 }
 
 // checkBlockLagAndTaint checks if a provider's block number is lagging behind others

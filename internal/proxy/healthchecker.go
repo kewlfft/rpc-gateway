@@ -35,12 +35,6 @@ type jsonRPCRequest[P any] struct {
 	Params  P      `json:"params"`
 }
 
-// loadAtomic is a Go 1.27 generic method helper for typed atomic.Value loads.
-func (h *HealthChecker) loadAtomic[T any](slot *atomic.Value) (T, bool) {
-	v, ok := slot.Load().(T)
-	return v, ok
-}
-
 // makeJSONRPCCall makes an optimized JSON-RPC call (generic params via Go 1.27 methods).
 func (h *HealthChecker) makeJSONRPCCall[P any](ctx context.Context, method string, params P) (*JSONRPCResponse, error) {
 	bodyData, err := jsonv2.Marshal(jsonRPCRequest[P]{"2.0", 1, method, params}, jsontext.EscapeForHTML(false))
@@ -112,7 +106,6 @@ type TaintState struct {
 	lastRemoval  time.Time
 	waitTime     time.Duration
 	removalTimer *time.Timer
-	config       TaintConfig
 }
 
 type HealthCheckerConfig struct {
@@ -136,18 +129,14 @@ type HealthChecker struct {
 	httpClient          *http.Client
 	blockNumber         atomic.Uint64
 	ethCallCheckCounter atomic.Uint32
-	mu                  sync.RWMutex // Only for taint state
-	taintRemoveCh       chan struct{}
+	mu                  sync.Mutex // Only for taint state
 	isTainted           atomic.Bool
 
 	// Taint state
 	taint TaintState
 
-	// callback function to be called when block number is updated
-	onBlockNumberUpdate atomic.Value
-
-	// callback function to be called before tainting (for cleanup)
-	onBeforeTaint atomic.Value
+	// Called after each successful block number update; set before Start
+	onBlockNumberUpdate BlockNumberUpdateCallback
 }
 
 func NewHealthChecker(config HealthCheckerConfig) *HealthChecker {
@@ -158,11 +147,9 @@ func NewHealthChecker(config HealthCheckerConfig) *HealthChecker {
 	httpClient := CreateOptimizedHTTPClient("proxy-"+config.Path, config.Timeout)
 
 	h := &HealthChecker{
-		config:        config,
-		httpClient:    httpClient,
-		taintRemoveCh: make(chan struct{}, 1),
+		config:     config,
+		httpClient: httpClient,
 		taint: TaintState{
-			config:   healthCheckTaintConfig,
 			waitTime: healthCheckTaintConfig.InitialWaitTime,
 		},
 	}
@@ -419,14 +406,10 @@ func (h *HealthChecker) CheckAndSetHealth() {
 	}
 }
 
-// SetBlockNumberUpdateCallback sets the callback function to be called when block number is updated.
+// SetBlockNumberUpdateCallback sets the function called after each block number update.
+// It must be called before Start.
 func (h *HealthChecker) SetBlockNumberUpdateCallback(callback BlockNumberUpdateCallback) {
-	h.onBlockNumberUpdate.Store(callback)
-}
-
-// SetBeforeTaintCallback sets the callback function to be called before tainting.
-func (h *HealthChecker) SetBeforeTaintCallback(callback func()) {
-	h.onBeforeTaint.Store(callback)
+	h.onBlockNumberUpdate = callback
 }
 
 func (h *HealthChecker) checkAndSetBlockNumberHealth() {
@@ -441,8 +424,8 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 
 	h.blockNumber.Store(blockNumber)
 
-	if callback, ok := h.loadAtomic[BlockNumberUpdateCallback](&h.onBlockNumberUpdate); ok && callback != nil {
-		callback(blockNumber)
+	if h.onBlockNumberUpdate != nil {
+		h.onBlockNumberUpdate(blockNumber)
 	}
 }
 
@@ -494,22 +477,17 @@ func (h *HealthChecker) runHealthChecker(c context.Context) {
 		case <-timer.C:
 			h.CheckAndSetHealth()
 			timer.Reset(h.config.Interval)
-		case <-h.taintRemoveCh:
-			h.mu.Lock()
-			if h.taint.removalTimer != nil {
-				h.taint.removalTimer.Stop()
-				h.taint.removalTimer = nil
-			}
-			h.mu.Unlock()
 		}
 	}
 }
 
+// Stop cancels a pending taint removal. The check loop itself ends with Start's context.
 func (h *HealthChecker) Stop(_ context.Context) error {
-	// Signal cleanup of taint removal timer
-	select {
-	case h.taintRemoveCh <- struct{}{}:
-	default:
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.taint.removalTimer != nil {
+		h.taint.removalTimer.Stop()
+		h.taint.removalTimer = nil
 	}
 	return nil
 }
@@ -524,20 +502,11 @@ func (h *HealthChecker) IsTainted() bool {
 
 // Taint marks the provider as tainted with backoff.
 func (h *HealthChecker) Taint(cfg TaintConfig) {
-	// Fast path: if already tainted, skip repeated taint work and logs
-	if h.isTainted.Load() {
+	// Atomically taint; if already tainted, skip repeated taint work and logs.
+	// CompareAndSwap also stops two concurrent callers from both arming a timer.
+	if !h.isTainted.CompareAndSwap(false, true) {
 		return
 	}
-
-	// Only call cleanup callback on first tainting
-	if h.config.ConnectionType == "websocket" {
-		if callback, ok := h.loadAtomic[func()](&h.onBeforeTaint); ok && callback != nil {
-			callback()
-		}
-	}
-
-	// Immediate atomic taint
-	h.isTainted.Store(true)
 
 	// Update taint state under lock
 	h.mu.Lock()
@@ -556,15 +525,7 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		h.taint.removalTimer.Stop()
 	}
 
-	// Assign new timer and config
-	h.taint.removalTimer = time.AfterFunc(wait, func() {
-		h.RemoveTaint()
-		select {
-		case h.taintRemoveCh <- struct{}{}:
-		default:
-		}
-	})
-	h.taint.config = cfg
+	h.taint.removalTimer = time.AfterFunc(wait, h.RemoveTaint)
 	h.taint.lastRemoval = now
 	h.taint.waitTime = wait
 	h.mu.Unlock()

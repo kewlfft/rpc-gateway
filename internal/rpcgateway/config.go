@@ -1,14 +1,11 @@
 package rpcgateway
 
 import (
-	"github.com/kewlfft/rpc-gateway/internal/metrics"
 	"github.com/kewlfft/rpc-gateway/internal/proxy"
 )
 
 // RPCGatewayConfig defines the top-level configuration for the RPC gateway
 type RPCGatewayConfig struct {
-	// Metrics server configuration
-	Metrics metrics.Config `yaml:"metrics"`
 	// Port to listen on for RPC requests
 	Port string `yaml:"port"`
 	// If true, providers will be randomized at startup

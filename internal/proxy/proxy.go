@@ -14,50 +14,18 @@ import (
 
 	"github.com/gorilla/websocket"
 	rpcerrors "github.com/kewlfft/rpc-gateway/internal/errors"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
-
-var (
-	metricRequestDuration = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "rpc_request_duration_seconds",
-			Help:    "Duration of RPC requests in seconds",
-			Buckets: prometheus.DefBuckets,
-		},
-		[]string{"method", "provider", "status"},
-	)
-	metricRequestErrors = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "rpc_requests_total",
-			Help: "Total number of RPC requests",
-		},
-		[]string{"method", "provider", "status"},
-	)
-)
-
-// ChainTypeHandler is an interface that extends http.Handler with chain type information
-type ChainTypeHandler interface {
-	http.Handler
-	GetChainType() string
-	RandomizeProviders()
-	GetHealthCheckManager() *HealthCheckManager
-}
 
 // Proxy represents an RPC proxy with health checking and failover
 type Proxy struct {
-	hcm            *HealthCheckManager
-	timeout        time.Duration
-	logger         *slog.Logger
-	targets        []*NodeProvider
-	chainType      string
-	client         *http.Client
-	healthyPool    sync.Pool
-	metricsEnabled bool
+	hcm         *HealthCheckManager
+	timeout     time.Duration
+	logger      *slog.Logger
+	targets     []*NodeProvider
+	chainType   string
+	transport   http.RoundTripper // shared pooled transport; see forwardRequest
+	healthyPool sync.Pool
 }
-
-// Ensure Proxy implements ChainTypeHandler
-var _ ChainTypeHandler = (*Proxy)(nil)
 
 // RandomizeProviders randomizes the order of providers using a simple time-based shuffle to avoid math/rand
 func (p *Proxy) RandomizeProviders() {
@@ -82,12 +50,11 @@ func NewProxy(config Config) (*Proxy, error) {
 	client := CreateOptimizedHTTPClient(config.Path, config.Timeout)
 
 	proxy := &Proxy{
-		hcm:            hcm,
-		timeout:        config.Timeout,
-		logger:         config.Logger,
-		chainType:      config.ChainType,
-		client:         client,
-		metricsEnabled: config.MetricsEnabled,
+		hcm:       hcm,
+		timeout:   config.Timeout,
+		logger:    config.Logger,
+		chainType: config.ChainType,
+		transport: client.Transport,
 	}
 	proxy.healthyPool.New = func() any {
 		return make([]*NodeProvider, 0, len(config.Targets))
@@ -104,15 +71,6 @@ func NewProxy(config Config) (*Proxy, error) {
 		)
 		proxy.targets = append(proxy.targets, p)
 	}
-
-	// Wire up WebSocket proxy references to health checkers
-	wsProxies := make(map[string]*WebSocketProxy)
-	for _, target := range proxy.targets {
-		if wsProxy := target.GetWebSocketProxy(); wsProxy != nil {
-			wsProxies[target.Name()] = wsProxy
-		}
-	}
-	hcm.SetWebSocketProxyReferences(wsProxies)
 
 	// The health check manager is started by RPCGateway.Start()
 	return proxy, nil
@@ -150,24 +108,10 @@ func (p *Proxy) getConnectionType(r *http.Request) string {
 	return "http"
 }
 
-// recordMetrics records metrics for a request when enabled and returns duration in ms.
-func (p *Proxy) recordMetrics(method, name, status string, start time.Time) int64 {
-	duration := time.Since(start).Milliseconds()
-	if !p.metricsEnabled {
-		return duration
-	}
-	metricRequestDuration.WithLabelValues(method, name, status).Observe(float64(duration) / 1000)
-	metricRequestErrors.WithLabelValues(method, name, status).Inc()
-	return duration
-}
-
-// handleProviderFailure handles provider failure by recording metrics, tainting the provider, and logging
+// handleProviderFailure taints the failed provider and logs the failure
 func (p *Proxy) handleProviderFailure(target *NodeProvider, r *http.Request, start time.Time, statusCode int, err error) {
 	name := target.Name()
-	duration := p.recordMetrics(r.Method, name, "error", start)
-	if p.metricsEnabled {
-		metricRequestErrors.WithLabelValues(r.Method, name, "rerouted").Inc()
-	}
+	duration := time.Since(start).Milliseconds()
 
 	connectionType := p.getConnectionType(r)
 	if hc := target.HealthChecker(connectionType); hc != nil {
@@ -187,12 +131,11 @@ func (p *Proxy) handleProviderFailure(target *NodeProvider, r *http.Request, sta
 }
 
 func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, start time.Time) {
-	duration := p.recordMetrics(r.Method, name, "success", start)
-
 	// Hot path: skip building log attributes unless debug is enabled
 	if !p.logger.Enabled(r.Context(), slog.LevelDebug) {
 		return
 	}
+	duration := time.Since(start).Milliseconds()
 	p.logger.Debug("request handled",
 		"provider", name,
 		"status", status,
@@ -231,18 +174,31 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 		return forwardRetry
 	}
 
-	// Copy headers from original request
-	maps.Copy(req.Header, r.Header)
-
-	// Add custom headers if configured
-	for key, value := range target.config.Connection.HTTP.Headers {
-		req.Header.Set(key, value)
-	}
-
 	req.URL.RawQuery = r.URL.RawQuery
 
-	// Use direct HTTP client call for minimal latency
-	resp, err := p.client.Do(req)
+	customHeaders := target.config.Connection.HTTP.Headers
+	if len(customHeaders) == 0 && req.URL.User == nil {
+		// Nothing to add: forward the client's headers as-is. The transport never
+		// modifies request headers, so sharing r.Header is safe and saves a copy.
+		req.Header = r.Header
+	} else {
+		// Copy so provider-specific headers never leak into r.Header, which is
+		// reused when failing over to the next provider
+		maps.Copy(req.Header, r.Header)
+		for key, value := range customHeaders {
+			req.Header.Set(key, value)
+		}
+		// Basic auth from a "user:pass@" provider URL, as http.Client would add it
+		if u := req.URL.User; u != nil && req.Header.Get("Authorization") == "" {
+			password, _ := u.Password()
+			req.SetBasicAuth(u.Username(), password)
+		}
+	}
+
+	// Call the transport directly: http.Client would clone all headers (for redirects)
+	// and arm a second deadline timer per request. Our ctx already enforces p.timeout,
+	// and redirects are not followed (a 3xx counts as a provider failure).
+	resp, err := p.transport.RoundTrip(req)
 	if err != nil {
 		// Check if this is a context cancellation error
 		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -354,7 +310,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			targetConn.Close()
 
 			// Connection successful - safe to upgrade
-			target.ServeHTTP(w, r)
+			wsProxy.ServeHTTP(w, r)
 			return
 		}
 

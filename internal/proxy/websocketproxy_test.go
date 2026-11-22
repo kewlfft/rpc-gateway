@@ -3,81 +3,19 @@ package proxy
 import (
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-func TestWebSocketProxy_UnsubscribeAll(t *testing.T) {
-	// Set up a mock WebSocket server to capture unsubscribe messages
-	var (
-		received []string
-		mu       sync.Mutex
-	)
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Fatalf("failed to upgrade: %v", err)
-		}
-		defer conn.Close()
-
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			received = append(received, string(msg))
-			mu.Unlock()
-		}
-	}))
-	defer ts.Close()
-
-	// Convert http://127.0.0.1 to ws://127.0.0.1
-	u, _ := url.Parse(ts.URL)
-	u.Scheme = "ws"
-	wsURL := u.String()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	proxy := NewWebSocketProxy(wsURL, 45*time.Second, logger)
-
-	// Simulate tracked subscriptions
-	subIDs := []string{"sub1", "sub2", "sub3"}
-	for _, id := range subIDs {
-		proxy.TrackSubscription(id)
-	}
-
-	proxy.UnsubscribeAll()
-
-	// Wait a bit for messages to be received
-	time.Sleep(200 * time.Millisecond)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(received) != len(subIDs) {
-		t.Fatalf("expected %d unsubscribe messages, got %d", len(subIDs), len(received))
-	}
-
-	for _, subID := range subIDs {
-		if !slices.ContainsFunc(received, func(msg string) bool {
-			return strings.Contains(msg, subID)
-		}) {
-			t.Errorf("subscription ID %q not found in any unsubscribe message", subID)
-		}
-	}
-}
-
-func TestWebSocketProxy_TracksSubscriptionsThroughPipe(t *testing.T) {
+// TestWebSocketProxy_PipesBothWaysAndForwardsClose checks that messages pass through
+// unchanged in both directions (text and binary) and that a graceful upstream close
+// reaches the client as a normal close frame.
+func TestWebSocketProxy_PipesBothWaysAndForwardsClose(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -86,24 +24,18 @@ func TestWebSocketProxy_TracksSubscriptionsThroughPipe(t *testing.T) {
 		}
 		defer conn.Close()
 		for {
-			var req struct {
-				ID     any    `json:"id"`
-				Method string `json:"method"`
-			}
-			if err := conn.ReadJSON(&req); err != nil {
+			mt, msg, err := conn.ReadMessage()
+			if err != nil {
 				return
 			}
-			switch req.Method {
-			case "eth_subscribe":
-				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": "0xsub1"})
-				// A notification must pass through untouched
-				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "method": "eth_subscription",
-					"params": map[string]any{"subscription": "0xsub1", "result": map[string]any{"number": "0x1"}}})
-			case "eth_unsubscribe":
-				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": true})
-			case "eth_chainId":
-				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": nil})
+			if string(msg) == "bye" {
+				_ = conn.WriteControl(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+				return
 			}
+			// Echo, then push an unsolicited notification
+			_ = conn.WriteMessage(mt, msg)
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0x1","result":{"number":"0x1"}}}`))
 		}
 	}))
 	defer upstream.Close()
@@ -116,52 +48,40 @@ func TestWebSocketProxy_TracksSubscriptionsThroughPipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscriptions := func() []string {
-		wsProxy.mu.RLock()
-		defer wsProxy.mu.RUnlock()
-		return slices.Sorted(maps.Keys(wsProxy.subscriptions))
-	}
-	waitFor := func(want []string) {
+	defer client.Close()
+
+	expect := func(wantType int, want string) {
 		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
-		for !slices.Equal(subscriptions(), want) {
-			if time.Now().After(deadline) {
-				t.Fatalf("subscriptions = %v, want %v", subscriptions(), want)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-	read := func() string {
-		t.Helper()
-		_, msg, err := client.ReadMessage()
+		mt, msg, err := client.ReadMessage()
 		if err != nil {
 			t.Fatal(err)
 		}
-		return string(msg)
+		if mt != wantType || string(msg) != want {
+			t.Fatalf("got type %d %q, want type %d %q", mt, msg, wantType, want)
+		}
 	}
+	notification := `{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0x1","result":{"number":"0x1"}}}`
 
-	// A null-result reply to a non-subscription request is not tracked
-	_ = client.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
-	read()
-
-	_ = client.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":2,"method":"eth_subscribe","params":["newHeads"]}`))
-	if got := read(); !strings.Contains(got, `"0xsub1"`) {
-		t.Fatalf("unexpected subscribe reply %s", got)
+	req := `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`
+	if err := client.WriteMessage(websocket.TextMessage, []byte(req)); err != nil {
+		t.Fatal(err)
 	}
-	if got := read(); !strings.Contains(got, `"eth_subscription"`) || !strings.Contains(got, `"number":"0x1"`) {
-		t.Fatalf("notification not forwarded intact: %s", got)
+	expect(websocket.TextMessage, req)
+	expect(websocket.TextMessage, notification)
+
+	bin := []byte{0x00, 0xff, 0x10}
+	if err := client.WriteMessage(websocket.BinaryMessage, bin); err != nil {
+		t.Fatal(err)
 	}
-	waitFor([]string{"0xsub1"})
+	expect(websocket.BinaryMessage, string(bin))
+	expect(websocket.TextMessage, notification)
 
-	_ = client.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":3,"method":"eth_unsubscribe","params":["0xsub1"]}`))
-	read()
-	waitFor(nil)
-
-	// Subscriptions are cleaned up when the client disconnects
-	_ = client.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":4,"method":"eth_subscribe","params":["newHeads"]}`))
-	read()
-	read()
-	waitFor([]string{"0xsub1"})
-	client.Close()
-	waitFor(nil)
+	if err := client.WriteMessage(websocket.TextMessage, []byte("bye")); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err = client.ReadMessage()
+	if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+		t.Fatalf("expected normal close from upstream, got %v", err)
+	}
 }

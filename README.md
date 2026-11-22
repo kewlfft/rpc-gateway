@@ -7,7 +7,6 @@ A high-performance RPC gateway that provides load balancing and health checking 
 - Load balancing across multiple RPC providers
 - Health checking with automatic failover
 - Support for multiple chains
-- Prometheus metrics
 - Configurable timeouts and intervals
 
 ## Configuration
@@ -16,9 +15,6 @@ The gateway is configured using a YAML file. Here's an example configuration:
 
 ```yaml
 port: 3000 # port for RPC gateway
-
-metrics:
-  port: 9010 # port for prometheus metrics, served on /metrics and /
 
 proxies:
   - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
@@ -40,7 +36,6 @@ proxies:
 ### Configuration Parameters
 
 - `port`: The port on which the RPC gateway will listen
-- `metrics.port`: The port on which Prometheus metrics will be served
 - `proxies`: List of proxy configurations for different chains
   - `path`: The URL path for this proxy (e.g., "eth" for Ethereum)
   - `timeout`: How long to wait for both upstream responses and health checks
@@ -64,15 +59,6 @@ A provider is marked as unhealthy if:
 - The provider fails to respond within the configured timeout
 
 A provider is marked as healthy again as soon as it passes a health check.
-
-## Metrics
-
-The gateway exposes Prometheus metrics at `/metrics`:
-
-- `rpc_provider_info`: Information about each RPC provider
-- `rpc_provider_status`: Current health status of each provider
-- `rpc_provider_block_number`: Latest block number reported by each provider
-- `rpc_provider_gas_left`: Gas left in each provider
 
 ## Building
 

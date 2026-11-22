@@ -25,7 +25,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/kewlfft/rpc-gateway/internal/rpcgateway"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func httpOK(status int) bool { return status >= 200 && status < 300 }
