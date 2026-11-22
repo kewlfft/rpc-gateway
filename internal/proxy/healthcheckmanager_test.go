@@ -380,6 +380,33 @@ func TestSolanaDevnetEndpointIsExcluded(t *testing.T) {
 	assert.True(t, hcm.GetHealthChecker("b", "http").IsHealthy())
 }
 
+// A Solana WebSocket endpoint takes its provider's HTTP fingerprint, so a
+// provider pointing both URLs at devnet is excluded on both.
+func TestSolanaWebSocketInheritsProviderNetwork(t *testing.T) {
+	config := createConfig()
+	config.Path = t.Name()
+	config.Logger = quietLogger
+	config.ChainType = "solana"
+	config.Targets = []NodeProviderConfig{
+		{Name: "devnet", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: "http://d"}, WebSocket: WebSocketConnection{URL: "ws://d"}}},
+		{Name: "a", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: "http://a"}, WebSocket: WebSocketConnection{URL: "ws://a"}}},
+		httpTarget("b", "http://b"),
+	}
+	hcm, err := NewHealthCheckManager(config)
+	require.NoError(t, err)
+	t.Cleanup(hcm.Stop)
+	hcm.GetHealthChecker("devnet", "http").setNetwork("EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG")
+	hcm.GetHealthChecker("a", "http").setNetwork("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")
+	hcm.GetHealthChecker("b", "http").setNetwork("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")
+
+	hcm.lagMu.Lock()
+	conflict := hcm.checkNetworks()
+	hcm.lagMu.Unlock()
+	assert.False(t, conflict)
+	assert.False(t, hcm.GetHealthChecker("devnet", "websocket").IsHealthy(), "inherits devnet")
+	assert.True(t, hcm.GetHealthChecker("a", "websocket").IsHealthy(), "inherits mainnet")
+}
+
 // The chain ID is a constant: it is requested on the first check only, and
 // again when a tainted endpoint is rechecked.
 func TestChainIDFetchedOnceAndOnRecovery(t *testing.T) {

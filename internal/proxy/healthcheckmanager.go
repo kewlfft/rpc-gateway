@@ -179,7 +179,7 @@ func (h *HealthCheckManager) checkNetworks() bool {
 	voters := make(map[string]map[string]bool, 2) // network -> providers reporting it
 	providers := make(map[string]bool, len(h.checkers))
 	for _, c := range h.checkers {
-		n := c.Network()
+		n := h.network(c)
 		if n == "" { // not fetched yet
 			continue
 		}
@@ -198,7 +198,7 @@ func (h *HealthCheckManager) checkNetworks() bool {
 	conflict := majority == "" && len(voters) > 1
 
 	for _, c := range h.checkers {
-		n := c.Network()
+		n := h.network(c)
 		wrong := majority != "" && n != "" && n != majority
 		if wrong != c.wrongChain.Load() {
 			c.wrongChain.Store(wrong)
@@ -221,7 +221,7 @@ func (h *HealthCheckManager) checkNetworks() bool {
 		if conflict {
 			ns := make([]string, 0, len(h.checkers))
 			for _, c := range h.checkers {
-				if n := c.Network(); n != "" {
+				if n := h.network(c); n != "" {
 					ns = append(ns, fmt.Sprintf("%s/%s=%s", c.config.Name, c.config.ConnectionType, n))
 				}
 			}
@@ -232,6 +232,18 @@ func (h *HealthCheckManager) checkNetworks() bool {
 		}
 	}
 	return conflict
+}
+
+// network returns the endpoint's network fingerprint, or for one that can't
+// report its own (Solana WebSocket), its provider's HTTP endpoint's.
+func (h *HealthCheckManager) network(c *HealthChecker) string {
+	if c.fingerprints() {
+		return c.Network()
+	}
+	if sibling := h.checkerMap[c.config.Name+":http"]; sibling != nil {
+		return sibling.Network()
+	}
+	return ""
 }
 
 // ChainConflict reports whether the path's providers disagree on the network

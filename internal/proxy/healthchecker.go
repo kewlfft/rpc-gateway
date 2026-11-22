@@ -271,6 +271,13 @@ func (h *HealthChecker) setNetwork(n string) {
 	h.network.Store(&n)
 }
 
+// fingerprints reports whether the endpoint can report its own network.
+// Solana's WebSocket endpoint serves subscriptions only (no getGenesisHash):
+// for the network vote it takes its provider's HTTP endpoint's fingerprint.
+func (h *HealthChecker) fingerprints() bool {
+	return !(h.config.ChainType == "solana" && h.config.ConnectionType == "websocket")
+}
+
 // wsCallString sends one JSON-RPC request without params on conn and returns
 // its string result, which must not be empty.
 func wsCallString(conn *websocket.Conn, id int, method string) (string, error) {
@@ -359,7 +366,7 @@ func (h *HealthChecker) blockCheckMethod() string {
 // when withNetwork is set or it is not known yet, to spare rate limits. The
 // same goes for the other chains' network fingerprint (see Network).
 func (h *HealthChecker) checkBlockNumber(ctx context.Context, withNetwork bool) (blockSample, error) {
-	withNetwork = withNetwork || h.Network() == ""
+	withNetwork = (withNetwork || h.Network() == "") && h.fingerprints()
 	var sample blockSample
 
 	switch {
@@ -393,14 +400,6 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context, withNetwork bool) 
 		conn.SetReadDeadline(deadline)
 
 		if h.config.ChainType == "solana" {
-			// Genesis hash first: no subscription notifications to skip yet
-			if withNetwork {
-				genesis, err := wsCallString(conn, 3, "getGenesisHash")
-				if err != nil {
-					return blockSample{}, err
-				}
-				h.setNetwork(genesis)
-			}
 			sample.block, err = h.checkSolanaSlotViaWebSocket(conn)
 			sample.at = time.Now()
 		} else {

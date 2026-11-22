@@ -52,7 +52,7 @@ proxies:
 
 The gateway performs health checks on each RPC provider:
 
-1. Block number check: Verifies the provider can return the latest block number, and reads its network fingerprint (EVM chain ID, Solana genesis hash, Tron block 0 hash) once, and again when a tainted provider is rechecked
+1. Block number check: Verifies the provider can return the latest block number, and reads its network fingerprint (EVM chain ID, Solana genesis hash, Tron block 0 hash; a Solana WebSocket endpoint, which serves subscriptions only, takes its provider's HTTP one) once, and again when a tainted provider is rechecked
 2. `eth_call` check: Verifies the provider executes EVM code (SHA-256 precompile), every second cycle
 
 A provider is marked as unhealthy if:

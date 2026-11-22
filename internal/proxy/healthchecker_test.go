@@ -589,10 +589,9 @@ func TestTronCheckFetchesHeaderOnly(t *testing.T) {
 	}
 }
 
-// Over WebSocket, the Solana genesis hash is read on the check's connection
-// before the slot subscription, and only on the first check.
-func TestSolanaWebSocketCheckReadsGenesisOnce(t *testing.T) {
-	var genesisCalls atomic.Int32
+// solanaPubSub serves a Solana WebSocket endpoint as real ones do:
+// subscriptions only, "Method not found" for anything else.
+func solanaPubSub(t *testing.T, slot uint64, other *atomic.Int32) string {
 	upgrader := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -609,27 +608,37 @@ func TestSolanaWebSocketCheckReadsGenesisOnce(t *testing.T) {
 				return
 			}
 			switch req.Method {
-			case "getGenesisHash":
-				genesisCalls.Add(1)
-				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"})
 			case "slotSubscribe":
 				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": 7})
 				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "method": "slotNotification",
-					"params": map[string]any{"subscription": 7, "result": map[string]any{"slot": 380000000}}})
-			default:
+					"params": map[string]any{"subscription": 7, "result": map[string]any{"slot": slot}}})
+			case "slotUnsubscribe":
 				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": true})
+			default:
+				other.Add(1)
+				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]any{"code": -32601, "message": "Method not found"}})
 			}
 		}
 	}))
 	t.Cleanup(srv.Close)
-	hc := NewHealthChecker(HealthCheckerConfig{Logger: quietLogger, URL: "ws" + strings.TrimPrefix(srv.URL, "http"), Name: "p",
+	return "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+// Solana's WebSocket endpoint serves subscriptions only: the check must not
+// ask it for anything else (0.6.31 asked for getGenesisHash and failed).
+func TestSolanaWebSocketCheckUsesSubscriptionsOnly(t *testing.T) {
+	var other atomic.Int32
+	hc := NewHealthChecker(HealthCheckerConfig{Logger: quietLogger, URL: solanaPubSub(t, 380000000, &other), Name: "p",
 		Path: t.Name(), Timeout: time.Second, ChainType: "solana", ConnectionType: "websocket"})
 	t.Cleanup(hc.Stop)
 
 	hc.CheckAndSetHealth()
+	hc.TaintHealthCheck("test") // a recovery recheck re-reads fingerprints: still none here
+	makeDue(hc)
 	hc.CheckAndSetHealth()
 	assert.False(t, hc.IsTainted())
 	assert.Equal(t, uint64(380000000), hc.BlockNumber())
-	assert.Equal(t, "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", hc.Network())
-	assert.Equal(t, int32(1), genesisCalls.Load())
+	assert.Zero(t, other.Load(), "no non-subscription method sent")
+	assert.Empty(t, hc.Network())
 }
