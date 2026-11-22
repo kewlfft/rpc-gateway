@@ -552,6 +552,8 @@ func (p *Proxy) collectProviderDetails(connType string) []string {
 			providerDetails[i] = name + ":no_checker"
 		case checker.IsTainted():
 			providerDetails[i] = name + ":tainted"
+		case checker.wrongChain.Load():
+			providerDetails[i] = name + ":wrong_chain"
 		default:
 			providerDetails[i] = name + ":unknown"
 		}

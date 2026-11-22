@@ -131,8 +131,8 @@ func (h *HealthCheckManager) checkBlockLag(now time.Time) {
 	var top blockSample
 	for _, c := range h.checkers {
 		s := c.sample.Load()
-		if s == nil || now.Sub(s.at) > window {
-			continue
+		if s == nil || now.Sub(s.at) > window || c.wrongChain.Load() {
+			continue // stale, or on another chain: its block can't be compared
 		}
 		fresh = append(fresh, c)
 		samples = append(samples, *s)
@@ -163,25 +163,46 @@ func (h *HealthCheckManager) checkBlockLag(now time.Time) {
 	}
 }
 
-// checkChainIDs reports whether the path's EVM endpoints disagree on the
-// chain ID (a misconfigured URL). All endpoints of a path must serve the same
-// chain; rather than guess which is wrong, the path is not served until the
-// wrong URL is removed from the config. Caller holds lagMu.
+// checkChainIDs compares the chain IDs the path's EVM endpoints report (a
+// misconfigured URL serves another chain). Endpoints off the chain reported by
+// a strict majority of those known are excluded; this is recomputed on every
+// update, so an early vote at startup corrects itself as endpoints answer.
+// With no majority, rather than guess which is wrong, the path is not served
+// until the wrong URL is removed from the config: it returns true then.
+// Caller holds lagMu.
 func (h *HealthCheckManager) checkChainIDs() bool {
-	var first uint64
-	conflict := false
+	counts := make(map[uint64]int, 2)
+	known := 0
 	for _, c := range h.checkers {
-		id := c.chainID.Load()
-		if id == 0 {
-			continue // not fetched yet, or not EVM
-		}
-		if first == 0 {
-			first = id
-		} else if id != first {
-			conflict = true
-			break
+		if id := c.chainID.Load(); id != 0 { // 0: not fetched yet, or not EVM
+			counts[id]++
+			known++
 		}
 	}
+	var majority uint64
+	for id, n := range counts {
+		if n*2 > known {
+			majority = id
+		}
+	}
+	conflict := majority == 0 && len(counts) > 1
+
+	for _, c := range h.checkers {
+		id := c.chainID.Load()
+		wrong := majority != 0 && id != 0 && id != majority
+		if wrong != c.wrongChain.Load() {
+			c.wrongChain.Store(wrong)
+			if wrong {
+				h.logger.Warn("provider on another chain excluded: remove its URL from the config",
+					"path", h.path, "name", c.config.Name, "conn", c.config.ConnectionType,
+					"chainId", id, "majorityChainId", majority)
+			} else {
+				h.logger.Info("provider back on the path's chain", "path", h.path,
+					"name", c.config.Name, "conn", c.config.ConnectionType, "chainId", id)
+			}
+		}
+	}
+
 	if conflict != h.chainConflict.Load() {
 		h.chainConflict.Store(conflict)
 		if conflict {
@@ -191,10 +212,10 @@ func (h *HealthCheckManager) checkChainIDs() bool {
 					ids = append(ids, fmt.Sprintf("%s/%s=%d", c.config.Name, c.config.ConnectionType, id))
 				}
 			}
-			h.logger.Error("providers report different chain IDs: not serving this path until the wrong URL is removed from the config",
+			h.logger.Error("providers report different chain IDs with no majority: not serving this path until the wrong URL is removed from the config",
 				"path", h.path, "chainIds", ids)
 		} else {
-			h.logger.Info("providers agree on the chain ID again: serving this path", "path", h.path)
+			h.logger.Info("providers' chain IDs settled: serving this path", "path", h.path)
 		}
 	}
 	return conflict

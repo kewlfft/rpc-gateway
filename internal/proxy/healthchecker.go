@@ -176,6 +176,7 @@ type HealthChecker struct {
 	ethCallCheckCounter atomic.Uint32
 	mu                  sync.Mutex // Only for taint state
 	isTainted           atomic.Bool
+	wrongChain          atomic.Bool // chain ID differs from the path's majority: excluded, set by the manager
 
 	// Taint state
 	taint TaintState
@@ -618,8 +619,10 @@ func (h *HealthChecker) Stop() {
 	}
 }
 
+// IsHealthy reports whether the endpoint may serve: not tainted, and on the
+// path's chain.
 func (h *HealthChecker) IsHealthy() bool {
-	return !h.IsTainted()
+	return !h.IsTainted() && !h.wrongChain.Load()
 }
 
 func (h *HealthChecker) IsTainted() bool {

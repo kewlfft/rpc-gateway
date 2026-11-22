@@ -254,6 +254,67 @@ func TestChainIDConflictStopsThePath(t *testing.T) {
 	assert.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code)
 }
 
+// With a majority, an endpoint on another chain is excluded (not tainted):
+// it serves nothing, and its higher block doesn't taint the others.
+func TestChainIDOutlierExcludedByMajority(t *testing.T) {
+	ups := map[string]*evmUpstream{
+		"a":     newEVMUpstream(t, 1000, 1),
+		"b":     newEVMUpstream(t, 1000, 1),
+		"wrong": newEVMUpstream(t, 50_000_000, 56),
+	}
+	config := createConfig()
+	config.Path = t.Name()
+	config.Logger = quietLogger
+	config.Targets = []NodeProviderConfig{
+		httpTarget("wrong", ups["wrong"].URL), httpTarget("a", ups["a"].URL), httpTarget("b", ups["b"].URL),
+	}
+	p, err := NewProxy(config)
+	require.NoError(t, err)
+	t.Cleanup(p.hcm.Stop)
+
+	for _, n := range []string{"wrong", "a", "b"} {
+		p.hcm.GetHealthChecker(n, "http").CheckAndSetHealth()
+	}
+	assert.False(t, p.hcm.ChainConflict())
+	wrong := p.hcm.GetHealthChecker("wrong", "http")
+	assert.False(t, wrong.IsTainted(), "excluded, not tainted")
+	assert.False(t, wrong.IsHealthy())
+	assert.True(t, p.hcm.GetHealthChecker("a", "http").IsHealthy())
+	assert.True(t, p.hcm.GetHealthChecker("b", "http").IsHealthy())
+
+	// wrong is first in priority order, yet gets no traffic
+	require.Equal(t, http.StatusOK, postRPC(p, "/", nil).Code)
+	assert.Zero(t, ups["wrong"].live.Load())
+	assert.Equal(t, int32(1), ups["a"].live.Load())
+}
+
+// The vote is recomputed on every update: two wrong endpoints answering first
+// at startup briefly outvote a, which recovers once the rest answer.
+func TestChainIDMajorityCorrectsEarlyStartupVote(t *testing.T) {
+	ups := map[string]*evmUpstream{
+		"w1": newEVMUpstream(t, 50_000_000, 56), "w2": newEVMUpstream(t, 50_000_000, 56),
+		"a": newEVMUpstream(t, 1000, 1), "b": newEVMUpstream(t, 1000, 1), "c": newEVMUpstream(t, 1000, 1),
+	}
+	hcm := newUpstreamManager(t, ups)
+	check := func(n string) { hcm.GetHealthChecker(n, "http").CheckAndSetHealth() }
+	healthy := func(n string) bool { return hcm.GetHealthChecker(n, "http").IsHealthy() }
+
+	check("w1")
+	check("w2")
+	check("a")
+	assert.False(t, healthy("a"), "outvoted 2 to 1 for now")
+	check("b")
+	assert.True(t, hcm.ChainConflict(), "2 to 2: no majority")
+	check("c")
+	assert.False(t, hcm.ChainConflict())
+	for _, n := range []string{"a", "b", "c"} {
+		assert.True(t, healthy(n), n)
+		assert.False(t, hcm.GetHealthChecker(n, "http").IsTainted(), "%s: the wrong chain's blocks never judged it", n)
+	}
+	assert.False(t, healthy("w1"))
+	assert.False(t, healthy("w2"))
+}
+
 // The chain ID is a constant: it is requested on the first check only, and
 // again when a tainted endpoint is rechecked.
 func TestChainIDFetchedOnceAndOnRecovery(t *testing.T) {
