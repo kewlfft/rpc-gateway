@@ -3,6 +3,8 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"math"
+	"sync"
 	"time"
 )
 
@@ -13,6 +15,10 @@ type HealthCheckManager struct {
 	path     string
 	// O(1) health checker lookups; written only during construction
 	checkerMap map[string]*HealthChecker // key: "name:connectionType"
+	timeout    time.Duration
+
+	lagMu     sync.Mutex  // serializes checkBlockLag
+	rateStart blockSample // first max block seen, for the chain's block rate
 }
 
 // NewHealthCheckManager creates a new health check manager
@@ -24,6 +30,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 		config:     config.HealthChecks,
 		path:       config.Path,
 		checkerMap: make(map[string]*HealthChecker),
+		timeout:    config.Timeout,
 	}
 
 	for _, target := range config.Targets {
@@ -65,9 +72,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				InitialDelay:   initialDelay,
 			})
 
-			checker.SetBlockNumberUpdateCallback(func(blockNumber uint64) {
-				hcm.checkBlockLagAndTaint(checker, blockNumber)
-			})
+			checker.SetBlockNumberUpdateCallback(func() { hcm.checkBlockLag(time.Now()) })
 
 			checkers = append(checkers, checker)
 			hcm.checkerMap[target.Name+":"+conn.connType] = checker
@@ -98,21 +103,73 @@ func (h *HealthCheckManager) GetHealthChecker(name string, connectionType string
 	return h.checkerMap[name+":"+connectionType]
 }
 
-// checkBlockLagAndTaint checks if a provider's block number is lagging behind others
-// Optimized to find max block and target checker in a single pass
-// The updated checker itself is tainted, so HTTP and WebSocket endpoints of the
-// same provider are judged separately.
-func (h *HealthCheckManager) checkBlockLagAndTaint(updated *HealthChecker, updatedBlockNumber uint64) {
-	var maxBlock uint64
-	for _, checker := range h.checkers {
-		maxBlock = max(maxBlock, checker.BlockNumber())
-	}
+// minRateSpan is the history of the max block needed before its rate is trusted.
+const minRateSpan = 10 * time.Second
 
-	// Equivalent to: maxBlock - updatedBlockNumber > threshold, without underflow
-	if maxBlock > updatedBlockNumber+h.config.BlockDiffThreshold {
-		updated.TaintHealthCheck(fmt.Sprintf(
-			"block lag: block=%d max=%d threshold=%d",
-			updatedBlockNumber, maxBlock, h.config.BlockDiffThreshold,
-		))
+// checkBlockLag taints every endpoint whose latest block is more than
+// BlockDiffThreshold behind the highest block of the current check cycle.
+//
+// All checks of a path fire together, so an endpoint that answers before the
+// leader must be judged again once the leader's block arrives: every fresh
+// sample is re-evaluated on every update. Samples older than the freshness
+// window (previous cycles, tainted endpoints that skip checks) are ignored.
+// When a sample was taken before the top one, the blocks the chain produced
+// in between (estimated from the max block's observed rate) are allowed, so
+// fast chains don't taint an endpoint just for answering first. HTTP and
+// WebSocket endpoints of the same provider are judged separately.
+func (h *HealthCheckManager) checkBlockLag(now time.Time) {
+	h.lagMu.Lock()
+	defer h.lagMu.Unlock()
+
+	window := h.timeout + time.Second // covers one cycle: 500 ms WS stagger + response time
+	fresh := make([]*HealthChecker, 0, len(h.checkers))
+	samples := make([]blockSample, 0, len(h.checkers))
+	var top blockSample
+	for _, c := range h.checkers {
+		s := c.sample.Load()
+		if s == nil || now.Sub(s.at) > window {
+			continue
+		}
+		fresh = append(fresh, c)
+		samples = append(samples, *s)
+		if s.block > top.block || (s.block == top.block && s.at.Before(top.at)) {
+			top = *s
+		}
 	}
+	if len(fresh) == 0 {
+		return
+	}
+	rate, rateKnown := h.blockRate(top)
+
+	for i, c := range fresh {
+		s := samples[i]
+		var allowance uint64
+		if skew := top.at.Sub(s.at); skew > 0 {
+			if !rateKnown {
+				continue // can't tell lag from answering earlier yet
+			}
+			allowance = uint64(math.Ceil(rate * skew.Seconds()))
+		}
+		// Equivalent to: top - block > threshold + allowance, without underflow
+		if top.block > s.block+h.config.BlockDiffThreshold+allowance {
+			c.TaintHealthCheck(fmt.Sprintf(
+				"block lag: block=%d max=%d threshold=%d allowance=%d",
+				s.block, top.block, h.config.BlockDiffThreshold, allowance,
+			))
+		}
+	}
+}
+
+// blockRate returns blocks per second, measured from the first max block seen
+// to top. Caller holds lagMu.
+func (h *HealthCheckManager) blockRate(top blockSample) (float64, bool) {
+	if h.rateStart.at.IsZero() || top.block < h.rateStart.block {
+		h.rateStart = top // first sample, or the start was bogus high
+		return 0, false
+	}
+	span := top.at.Sub(h.rateStart.at)
+	if span < minRateSpan {
+		return 0, false
+	}
+	return float64(top.block-h.rateStart.block) / span.Seconds(), true
 }

@@ -134,13 +134,19 @@ type HealthCheckerConfig struct {
 	InitialDelay   time.Duration
 }
 
-// BlockNumberUpdateCallback is called when a health checker successfully updates its block number
-type BlockNumberUpdateCallback func(blockNumber uint64)
+// BlockNumberUpdateCallback is called after a health checker records a new block sample
+type BlockNumberUpdateCallback func()
+
+// blockSample is a block number and when it was received.
+type blockSample struct {
+	block uint64
+	at    time.Time
+}
 
 type HealthChecker struct {
 	config              HealthCheckerConfig
 	httpClient          *http.Client
-	blockNumber         atomic.Uint64
+	sample              atomic.Pointer[blockSample] // latest block number; nil until the first check
 	ethCallCheckCounter atomic.Uint32
 	mu                  sync.Mutex // Only for taint state
 	isTainted           atomic.Bool
@@ -437,10 +443,10 @@ func (h *HealthChecker) checkAndSetBlockNumberHealth() {
 		return
 	}
 
-	h.blockNumber.Store(blockNumber)
+	h.setBlockNumber(blockNumber, time.Now())
 
 	if h.onBlockNumberUpdate != nil {
-		h.onBlockNumberUpdate(blockNumber)
+		h.onBlockNumberUpdate()
 	}
 }
 
@@ -627,5 +633,12 @@ func (h *HealthChecker) RemoveTaint() {
 }
 
 func (h *HealthChecker) BlockNumber() uint64 {
-	return h.blockNumber.Load()
+	if s := h.sample.Load(); s != nil {
+		return s.block
+	}
+	return 0
+}
+
+func (h *HealthChecker) setBlockNumber(block uint64, at time.Time) {
+	h.sample.Store(&blockSample{block, at})
 }

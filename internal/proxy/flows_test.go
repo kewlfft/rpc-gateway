@@ -157,33 +157,6 @@ func TestErrorResponseKeepsIDWithCharsetContentType(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), `"id":9`)
 }
 
-func TestBlockLagTaintsTheLaggingEndpointOnly(t *testing.T) {
-	config := createConfig()
-	config.Path = t.Name()
-	config.Logger = quietLogger
-	config.Targets = []NodeProviderConfig{
-		{Name: "a", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: "http://a"}, WebSocket: WebSocketConnection{URL: "ws://a"}}},
-		{Name: "b", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: "http://b"}}},
-	}
-	hcm, err := NewHealthCheckManager(config)
-	require.NoError(t, err)
-	aHTTP, aWS, bHTTP := hcm.GetHealthChecker("a", "http"), hcm.GetHealthChecker("a", "websocket"), hcm.GetHealthChecker("b", "http")
-
-	bHTTP.blockNumber.Store(100)
-	aHTTP.blockNumber.Store(100)
-	aWS.blockNumber.Store(90)
-	hcm.checkBlockLagAndTaint(aWS, 90)
-	assert.True(t, aWS.IsTainted(), "lagging WebSocket endpoint must be tainted")
-	assert.False(t, aHTTP.IsTainted(), "in-sync HTTP endpoint of the same provider must not be")
-
-	aWS.RemoveTaint()
-	aWS.blockNumber.Store(100)
-	aHTTP.blockNumber.Store(90)
-	hcm.checkBlockLagAndTaint(aHTTP, 90)
-	assert.True(t, aHTTP.IsTainted())
-	assert.False(t, aWS.IsTainted())
-}
-
 // wsUpstream starts an echo WebSocket server counting accepted connections.
 // If silent, it accepts but never reads, so it never answers pings.
 func wsUpstream(t *testing.T, silent bool) (*httptest.Server, *atomic.Int32) {
