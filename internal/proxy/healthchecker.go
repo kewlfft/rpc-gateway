@@ -183,6 +183,9 @@ type HealthChecker struct {
 
 	// Called after each successful block number update; set before Start
 	onBlockNumberUpdate BlockNumberUpdateCallback
+	// Called when the endpoint is judged unhealthy (health-check taint or
+	// wrong chain), to end sessions open on it; set before Start
+	onUnhealthy func()
 }
 
 func NewHealthChecker(config HealthCheckerConfig) *HealthChecker {
@@ -529,6 +532,12 @@ func (h *HealthChecker) liftRecheckTaint() {
 	h.logRemoved()
 }
 
+// SetUnhealthyCallback sets the function called when health checks judge the
+// endpoint unhealthy. It must be called before Start.
+func (h *HealthChecker) SetUnhealthyCallback(callback func()) {
+	h.onUnhealthy = callback
+}
+
 // SetBlockNumberUpdateCallback sets the function called after each block number update.
 // It must be called before Start.
 func (h *HealthChecker) SetBlockNumberUpdateCallback(callback BlockNumberUpdateCallback) {
@@ -719,6 +728,12 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		logArgs = append(logArgs, "detail", cfg.Detail)
 	}
 	h.config.Logger.Info("provider tainted", logArgs...)
+
+	// Health-check failures (lag, errors, eth_call) mean what open sessions
+	// receive is wrong or stale; a live-request or 429 taint doesn't
+	if cfg.Recheck && h.onUnhealthy != nil {
+		h.onUnhealthy()
+	}
 }
 
 // expireTaint ends a timer taint, or for probing configs keeps it (doubling

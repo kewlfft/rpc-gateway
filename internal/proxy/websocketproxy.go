@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -34,6 +35,9 @@ type WebSocketProxy struct {
 	logger       *slog.Logger
 	timeout      time.Duration // Timeout for connection attempts and pings
 	pingInterval time.Duration // defaultPingInterval; per instance so tests can shorten it
+
+	mu       sync.Mutex
+	sessions map[chan struct{}]struct{} // open sessions; closing a channel ends its session
 }
 
 func NewWebSocketProxy(targetURL string, timeout time.Duration, logger *slog.Logger) *WebSocketProxy {
@@ -42,7 +46,37 @@ func NewWebSocketProxy(targetURL string, timeout time.Duration, logger *slog.Log
 		logger:       logger,
 		timeout:      timeout,
 		pingInterval: defaultPingInterval,
+		sessions:     make(map[chan struct{}]struct{}),
 	}
+}
+
+// CloseSessions ends every open session, telling clients to reconnect (close
+// code 1012, service restart) so they are routed to a healthy provider. A
+// health taint only steers new connections; without this, long-lived
+// subscribers would stay on a lagging or wrong-chain provider indefinitely.
+func (p *WebSocketProxy) CloseSessions() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.sessions)
+	for kill := range p.sessions {
+		close(kill)
+		delete(p.sessions, kill)
+	}
+	return n
+}
+
+func (p *WebSocketProxy) register() chan struct{} {
+	kill := make(chan struct{})
+	p.mu.Lock()
+	p.sessions[kill] = struct{}{}
+	p.mu.Unlock()
+	return kill
+}
+
+func (p *WebSocketProxy) unregister(kill chan struct{}) {
+	p.mu.Lock()
+	delete(p.sessions, kill) // no-op if CloseSessions already removed it
+	p.mu.Unlock()
 }
 
 // serve upgrades the client and pipes it to the already-dialed upstream
@@ -55,6 +89,8 @@ func (p *WebSocketProxy) serve(w http.ResponseWriter, r *http.Request, targetCon
 		return
 	}
 	defer clientConn.Close()
+	kill := p.register()
+	defer p.unregister(kill)
 
 	// Detect dead peers: pings go out every p.pingInterval, and each pong or message
 	// pushes the read deadline out. A peer silent for longer than readTimeout is
@@ -135,7 +171,14 @@ func (p *WebSocketProxy) serve(w http.ResponseWriter, r *http.Request, targetCon
 		}
 	}()
 
-	closeInfo := <-errCh
+	var closeInfo upstreamCloseInfo
+	select {
+	case closeInfo = <-errCh:
+	case <-kill:
+		closeInfo = upstreamCloseInfo{err: errors.New("provider unhealthy")}
+		_ = clientConn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseServiceRestart, "provider unhealthy, reconnect"), time.Now().Add(2*time.Second))
+	}
 	// If upstream closed gracefully, forward a close frame to the client
 	if closeInfo.isGracefulClose {
 		_ = clientConn.WriteControl(websocket.CloseMessage,

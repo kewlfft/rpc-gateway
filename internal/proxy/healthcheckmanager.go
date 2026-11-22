@@ -198,6 +198,9 @@ func (h *HealthCheckManager) checkChainIDs() bool {
 				h.logger.Warn("provider on another chain excluded: remove its URL from the config",
 					"path", h.path, "name", c.config.Name, "conn", c.config.ConnectionType,
 					"chainId", id, "majorityChainId", majority)
+				if c.onUnhealthy != nil {
+					c.onUnhealthy()
+				}
 			} else {
 				h.logger.Info("provider back on the path's chain", "path", h.path,
 					"name", c.config.Name, "conn", c.config.ConnectionType, "chainId", id)

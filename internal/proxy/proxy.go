@@ -67,10 +67,16 @@ func NewProxy(config Config) (*Proxy, error) {
 	for _, target := range config.Targets {
 		p := NewNodeProvider(target, config.Timeout, config.Logger)
 		// Link health checkers directly to the node provider for high performance health checks
-		p.SetHealthCheckers(
-			hcm.GetHealthChecker(target.Name, "http"),
-			hcm.GetHealthChecker(target.Name, "websocket"),
-		)
+		wsChecker := hcm.GetHealthChecker(target.Name, "websocket")
+		p.SetHealthCheckers(hcm.GetHealthChecker(target.Name, "http"), wsChecker)
+		if ws := p.GetWebSocketProxy(); ws != nil && wsChecker != nil {
+			wsChecker.SetUnhealthyCallback(func() {
+				if n := ws.CloseSessions(); n > 0 {
+					config.Logger.Info("closed websocket sessions of unhealthy provider",
+						"path", config.Path, "name", target.Name, "sessions", n)
+				}
+			})
+		}
 		proxy.targets = append(proxy.targets, p)
 	}
 

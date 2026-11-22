@@ -539,3 +539,66 @@ func TestAllTaintedProvidersAreTriedAsLastResort(t *testing.T) {
 	assert.Equal(t, int32(1), served.Load())
 	assert.Zero(t, wrongServed.Load())
 }
+
+// A health taint must end sessions already open on the provider, telling
+// clients to reconnect (1012), or long-lived subscribers would stay on a
+// lagging or wrong-chain provider; short live-request and 429 taints must not.
+func TestUnhealthyProviderClosesOpenWebSocketSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		taint  func(hcm *HealthCheckManager, hc *HealthChecker)
+		closes bool
+	}{
+		{"health check failure", func(_ *HealthCheckManager, hc *HealthChecker) { hc.TaintHealthCheck("block lag") }, true},
+		{"wrong chain", func(hcm *HealthCheckManager, hc *HealthChecker) {
+			hcm.lagMu.Lock()
+			defer hcm.lagMu.Unlock()
+			for _, c := range hcm.checkers { // p/websocket on chain 56, the two others on 1
+				id := uint64(1)
+				if c == hc {
+					id = 56
+				}
+				c.chainID.Store(id)
+			}
+			hcm.checkChainIDs()
+		}, true},
+		{"live request failure", func(_ *HealthCheckManager, hc *HealthChecker) { hc.TaintHTTP() }, false},
+		{"rate limited", func(_ *HealthCheckManager, hc *HealthChecker) { hc.TaintRateLimited(time.Minute) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream, _ := wsUpstream(t, false)
+			wsURL := "ws" + strings.TrimPrefix(upstream.URL, "http")
+			config := createConfig()
+			config.Path = t.Name()
+			config.Logger = quietLogger
+			config.Targets = []NodeProviderConfig{
+				{Name: "p", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: "http://p"}, WebSocket: WebSocketConnection{URL: wsURL}}},
+				{Name: "q", Connection: ConnectionConfig{HTTP: HTTPConnection{URL: "http://q"}}},
+			}
+			p, err := NewProxy(config)
+			require.NoError(t, err)
+			t.Cleanup(p.hcm.Stop)
+			gw := httptest.NewServer(p)
+			t.Cleanup(gw.Close)
+
+			client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gw.URL, "http"), nil)
+			require.NoError(t, err)
+			defer client.Close()
+			require.NoError(t, client.WriteMessage(websocket.TextMessage, []byte("ping")))
+			_, _, err = client.ReadMessage() // session is up
+			require.NoError(t, err)
+
+			tc.taint(p.hcm, p.hcm.GetHealthChecker("p", "websocket"))
+
+			_ = client.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+			_, _, err = client.ReadMessage()
+			if tc.closes {
+				assert.True(t, websocket.IsCloseError(err, websocket.CloseServiceRestart), "want close 1012, got %v", err)
+				return
+			}
+			var netErr interface{ Timeout() bool }
+			require.ErrorAs(t, err, &netErr, "session must stay open, got %v", err)
+			assert.True(t, netErr.Timeout())
+		})
+	}
+}
