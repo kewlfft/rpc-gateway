@@ -11,7 +11,6 @@ import (
 // HealthCheckManager manages health checks for multiple node providers
 type HealthCheckManager struct {
 	config   HealthCheckConfig
-	targets  []NodeProviderConfig
 	logger   *slog.Logger
 	checkers []*HealthChecker
 	path     string
@@ -28,10 +27,9 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 
 	// Create the manager first so we can use it in the callbacks
 	hcm := &HealthCheckManager{
-		config:  config.HealthChecks,
-		targets: config.Targets,
-		logger:  config.Logger,
-		path:    config.Path,
+		config: config.HealthChecks,
+		logger: config.Logger,
+		path:   config.Path,
 		// Use incremental staggering
 		initialDelay: time.Duration(config.PathIndex*1000) * time.Millisecond,
 		checkerMap:   make(map[string]*HealthChecker),
@@ -90,10 +88,9 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 
 // Start starts the health check manager
 func (h *HealthCheckManager) Start(ctx context.Context) error {
-	// Start all checkers for this path concurrently
-	// The path-level staggering is handled by the proxy's path initialization
+	// checker.Start is non-blocking; staggering is handled via each checker's InitialDelay
 	for _, checker := range h.checkers {
-		go checker.Start(ctx)
+		checker.Start(ctx)
 	}
 	return nil
 }

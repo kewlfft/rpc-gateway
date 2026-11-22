@@ -23,7 +23,7 @@ func TestPerformEthCallHealthCheckSuccess(t *testing.T) {
 	defer server.Close()
 
 	client := CreateOptimizedHTTPClient("test-client-success", 30*time.Second)
-	err := performEthCallHealthCheck(t.Context(), client, server.URL)
+	err := performEthCallHealthCheck(t.Context(), client, server.URL, nil)
 
 	assert.NoError(t, err)
 }
@@ -41,7 +41,7 @@ func TestPerformEthCallHealthCheckRejectsStubbedResult(t *testing.T) {
 	defer server.Close()
 
 	client := CreateOptimizedHTTPClient("test-client-stub", 30*time.Second)
-	err := performEthCallHealthCheck(t.Context(), client, server.URL)
+	err := performEthCallHealthCheck(t.Context(), client, server.URL, nil)
 
 	assert.ErrorContains(t, err, "unexpected result")
 }
@@ -64,7 +64,7 @@ func TestPerformEthCallHealthCheckErrors(t *testing.T) {
 		defer server.Close()
 
 		client := CreateOptimizedHTTPClient("test-client", 30*time.Second)
-		err := performEthCallHealthCheck(t.Context(), client, server.URL)
+		err := performEthCallHealthCheck(t.Context(), client, server.URL, nil)
 
 		assert.Error(t, err)
 		assert.ErrorContains(t, err, "unexpected status")
@@ -86,7 +86,7 @@ func TestPerformEthCallHealthCheckErrors(t *testing.T) {
 		defer server.Close()
 
 		client := CreateOptimizedHTTPClient("test-client", 30*time.Second)
-		err := performEthCallHealthCheck(t.Context(), client, server.URL)
+		err := performEthCallHealthCheck(t.Context(), client, server.URL, nil)
 
 		assert.Error(t, err)
 		assert.ErrorContains(t, err, "decode:")
@@ -111,9 +111,25 @@ func TestPerformEthCallHealthCheckErrors(t *testing.T) {
 		defer cancel()
 
 		client := CreateOptimizedHTTPClient("test-client-timeout", 30*time.Second)
-		err := performEthCallHealthCheck(timeout, client, server.URL)
+		err := performEthCallHealthCheck(timeout, client, server.URL, nil)
 
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	})
+}
+
+func TestPerformEthCallHealthCheckSendsProviderHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key") != "secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"` + sha256PrecompileExpect + `"}`))
+	}))
+	defer server.Close()
+
+	client := CreateOptimizedHTTPClient("test-client-headers", 30*time.Second)
+	assert.NoError(t, performEthCallHealthCheck(t.Context(), client, server.URL, map[string]string{"X-Api-Key": "secret"}))
+	assert.ErrorContains(t, performEthCallHealthCheck(t.Context(), client, server.URL, nil), "unexpected status 401")
 }

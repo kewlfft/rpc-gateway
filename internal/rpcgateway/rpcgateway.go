@@ -54,7 +54,7 @@ func (r *RPCGateway) Start(c context.Context) error {
 	// Start metrics server if enabled
 	if r.config.Metrics.IsEnabled() {
 		go func() {
-			if err := r.metrics.Start(); isServerClosedError(err) {
+			if err := r.metrics.Start(); isUnexpectedServerError(err) {
 				slog.Error("metrics server error", "error", err)
 			}
 		}()
@@ -62,7 +62,7 @@ func (r *RPCGateway) Start(c context.Context) error {
 
 	// Start main server
 	go func() {
-		if err := r.server.ListenAndServe(); isServerClosedError(err) {
+		if err := r.server.ListenAndServe(); isUnexpectedServerError(err) {
 			slog.Error("rpc-gateway server error", "error", err)
 		}
 	}()
@@ -81,8 +81,9 @@ func checkPortAvailability(port string) error {
 	return nil
 }
 
-// isServerClosedError checks if an error is http.ErrServerClosed (expected during shutdown)
-func isServerClosedError(err error) bool {
+// isUnexpectedServerError reports whether err is a real error, i.e. non-nil and not
+// http.ErrServerClosed (which is expected during shutdown)
+func isUnexpectedServerError(err error) bool {
 	return err != nil && !errors.Is(err, http.ErrServerClosed)
 }
 
@@ -91,13 +92,13 @@ func (r *RPCGateway) Stop(c context.Context) error {
 	slog.Info("shutting down rpc-gateway")
 
 	// Stop main server
-	if err := r.server.Close(); isServerClosedError(err) {
+	if err := r.server.Close(); isUnexpectedServerError(err) {
 		slog.Error("error stopping rpc-gateway server", "error", err)
 	}
 
 	// Stop metrics server if enabled
 	if r.config.Metrics.IsEnabled() {
-		if err := r.metrics.Stop(); isServerClosedError(err) {
+		if err := r.metrics.Stop(); isUnexpectedServerError(err) {
 			slog.Error("error stopping metrics server", "error", err)
 		}
 	}
@@ -209,12 +210,9 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 			p.ServeHTTP(w, r)
 		}
 
-		// Register routes: base path, trailing slash, and catch-all for tron
-		r.Handle(pathPrefix, http.HandlerFunc(handler))
-		r.Handle(pathPrefix+"/", http.HandlerFunc(handler))
-		if isTron {
-			r.Handle(pathPrefix+"/*", http.HandlerFunc(handler))
-		}
+		// Register base path and subtree ("/path/" already matches every sub-path, incl. tron's)
+		r.HandleFunc(pathPrefix, handler)
+		r.HandleFunc(pathPrefix+"/", handler)
 	}
 
 	return &RPCGateway{
@@ -255,13 +253,15 @@ func NewRPCGatewayFromConfigFile(s string) (*RPCGateway, error) {
 	return NewRPCGateway(config)
 }
 
-// SetRandomizeProviders sets the randomizeProviders flag and applies it to all proxies
+// SetRandomizeProviders enables provider randomization and shuffles all proxies,
+// unless providers were already randomized (via config or an earlier call).
 func (r *RPCGateway) SetRandomizeProviders(randomize bool) {
-	r.config.RandomizeProviders = randomize
-	if randomize {
-		for _, p := range r.proxies {
-			p.RandomizeProviders()
-		}
-		slog.Info("providers randomized from CLI flag")
+	if !randomize || r.config.RandomizeProviders {
+		return
 	}
+	r.config.RandomizeProviders = true
+	for _, p := range r.proxies {
+		p.RandomizeProviders()
+	}
+	slog.Info("providers randomized from CLI flag")
 }

@@ -45,7 +45,7 @@ const (
 	sha256PrecompileExpect = "0x5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"
 )
 
-func performEthCallHealthCheck(ctx context.Context, client *http.Client, url string) error {
+func performEthCallHealthCheck(ctx context.Context, client *http.Client, url string, headers map[string]string) error {
 	const ethCallRaw = `{
 		"method": "eth_call",
 		"params": [
@@ -64,6 +64,10 @@ func performEthCallHealthCheck(ctx context.Context, client *http.Client, url str
 		return fmt.Errorf("ethCallHealth: new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

@@ -3,12 +3,12 @@ package errors
 import (
 	"log/slog"
 	"net/http"
-	"slices"
 
 	jsonv2 "encoding/json/v2"
 )
 
-// WriteJSONRPCError writes an error response in JSON-RPC format and logs the error
+// WriteJSONRPCError writes an error response in JSON-RPC format and logs the error.
+// It must only be called before anything has been written to w.
 // bodyBytes is used to extract the request ID from the JSON-RPC request
 // providerDetails is optional diagnostic information about provider status
 func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, status int, bodyBytes []byte, providerDetails ...string) {
@@ -23,12 +23,7 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-
-	// Check if headers have already been written by checking if status was set
-	if w.Header().Get("X-Status-Set") == "" {
-		w.Header().Set("X-Status-Set", "true")
-		w.WriteHeader(status)
-	}
+	w.WriteHeader(status)
 
 	_ = jsonv2.MarshalWrite(w, map[string]any{
 		"jsonrpc": "2.0",
@@ -40,14 +35,14 @@ func WriteJSONRPCError(w http.ResponseWriter, r *http.Request, message string, s
 	})
 
 	// Log the error with relevant context
-	logAttrs := slices.Grow([]any{
+	logAttrs := []any{
 		"message", message,
 		"status", status,
 		"method", r.Method,
 		"path", r.URL.Path,
 		"request_id", requestID,
 		"remote_addr", r.RemoteAddr,
-	}, len(providerDetails)*2)
+	}
 	if len(providerDetails) > 0 {
 		logAttrs = append(logAttrs, "providers", providerDetails)
 	}

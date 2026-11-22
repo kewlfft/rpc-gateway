@@ -78,9 +78,8 @@ func NewProxy(config Config) (*Proxy, error) {
 		return nil, fmt.Errorf("failed to create health check manager: %w", err)
 	}
 
-	// Create optimized HTTP client using shared connection pool with default settings
-	clientKey := "proxy-" + config.Path
-	client := CreateOptimizedHTTPClient(clientKey, config.Timeout)
+	// Shared connection pool with the health checkers of this path
+	client := CreateOptimizedHTTPClient(config.Path, config.Timeout)
 
 	proxy := &Proxy{
 		hcm:            hcm,
@@ -113,14 +112,9 @@ func NewProxy(config Config) (*Proxy, error) {
 			wsProxies[target.Name()] = wsProxy
 		}
 	}
+	hcm.SetWebSocketProxyReferences(wsProxies)
 
-	if len(wsProxies) > 0 {
-		hcm.SetWebSocketProxyReferences(wsProxies)
-	}
-
-	// Health check manager will be started by RPCGateway.Start()
-	// Don't start it here to avoid duplicate starts
-
+	// The health check manager is started by RPCGateway.Start()
 	return proxy, nil
 }
 
@@ -132,13 +126,8 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 
 // copyResponse copies headers, status code, and body from the source response to the target response writer
 func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
-	// Check if headers have already been written to avoid "superfluous response.WriteHeader call"
-	if w.Header().Get("X-Status-Set") == "" {
-		// Copy headers only if they haven't been written yet
-		maps.Copy(w.Header(), resp.Header)
-		w.Header().Set("X-Status-Set", "true")
-		w.WriteHeader(resp.StatusCode)
-	}
+	maps.Copy(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
 
 	// Stream the response body directly
 	if _, err := io.Copy(w, resp.Body); err != nil {
@@ -209,9 +198,16 @@ func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, s
 	)
 }
 
+// forwardResult tells ServeHTTP whether to try the next provider.
+type forwardResult int
+
+const (
+	forwardRetry forwardResult = iota // failed before anything was written to the client
+	forwardDone                       // response sent, or client gone / response already committed
+)
+
 // forwardRequest handles both standard and Tron requests with direct streaming
-// Returns: true if successful, false if failed and retryable, -1 if failed and not retryable (client disconnect)
-func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) int {
+func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, target *NodeProvider, urlPath string) forwardResult {
 	name := target.Name()
 
 	// Create a new context with timeout for this specific request to avoid context cancellation cascade
@@ -228,7 +224,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"path", r.URL.Path,
 			"provider_url", urlPath)
 		p.handleProviderFailure(target, r, start, http.StatusServiceUnavailable, err)
-		return 0
+		return forwardRetry
 	}
 
 	// Copy headers from original request
@@ -239,10 +235,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 		req.Header.Set(key, value)
 	}
 
-	// Add query parameters to the request
-	if r.URL.RawQuery != "" {
-		req.URL.RawQuery = r.URL.RawQuery
-	}
+	req.URL.RawQuery = r.URL.RawQuery
 
 	// Use direct HTTP client call for minimal latency
 	resp, err := p.client.Do(req)
@@ -261,7 +254,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 				"method", r.Method)
 		}
 		p.handleProviderFailure(target, r, start, http.StatusServiceUnavailable, err)
-		return 0
+		return forwardRetry
 	}
 	defer resp.Body.Close()
 
@@ -273,7 +266,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"method", r.Method,
 			"url", urlPath)
 		p.handleProviderFailure(target, r, start, resp.StatusCode, nil)
-		return 0
+		return forwardRetry
 	}
 
 	if err := p.copyResponse(w, resp); err != nil {
@@ -284,7 +277,7 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 				"url", urlPath,
 				"method", r.Method)
 			// Don't taint provider for client disconnection and don't retry
-			return -1
+			return forwardDone
 		}
 
 		p.logger.Error("Failed to copy response",
@@ -292,14 +285,18 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 			"url", urlPath,
 			"method", r.Method)
 		p.handleProviderFailure(target, r, start, resp.StatusCode, err)
-		return 0
+		// Headers are already sent: retrying would corrupt the response
+		p.logger.Warn("Provider failed during streaming, cannot retry to avoid response corruption",
+			"provider", name,
+			"path", p.hcm.path)
+		return forwardDone
 	}
 
 	p.logSuccessfulRequest(r, name, resp.StatusCode, start)
-	return 1
+	return forwardDone
 }
 
-// Update ServeHTTP to use the unified forwardRequest
+// ServeHTTP forwards the request to the first healthy provider, failing over on errors.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	connType := p.getConnectionType(r)
@@ -340,20 +337,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			// Create upstream connection BEFORE upgrading (upgrade commits HTTP response)
 			// If this fails, we can try next provider without committing to the client
-			if targetConn := wsProxy.createNewConnection(); targetConn == nil {
-				p.logger.Debug("WebSocket connection failed",
-					"provider", name)
-				if hc := p.hcm.GetHealthChecker(name, connType); hc != nil {
+			targetConn := wsProxy.createNewConnection()
+			if targetConn == nil {
+				if hc := target.HealthChecker(connType); hc != nil {
 					hc.TaintHTTP()
 				}
-				p.logger.Debug("trying next WebSocket provider",
+				p.logger.Debug("WebSocket connection failed, trying next provider",
 					"failed_provider", name,
 					"total_providers", len(healthyProviders))
-				continue // Try next provider
-			} else {
-				// Close test connection - real one will be created in ServeHTTP
-				targetConn.Close()
+				continue
 			}
+			// Close test connection - the real one is created in ServeHTTP
+			targetConn.Close()
 
 			// Connection successful - safe to upgrade
 			target.ServeHTTP(w, r)
@@ -365,18 +360,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			url += r.URL.Path
 		}
 
-		result := p.forwardRequest(w, r, bodyBytes, start, target, url)
-		if result != 0 {
-			// 1 = success, -1 = client disconnected — either way stop retrying
-			return
-		}
-
-		// If the request failed but we already sent headers to the client,
-		// we MUST NOT retry because the stream is already "committed" and corrupted.
-		if w.Header().Get("X-Status-Set") != "" {
-			p.logger.Warn("Provider failed during streaming, cannot retry to avoid response corruption",
-				"provider", name,
-				"path", p.hcm.path)
+		if p.forwardRequest(w, r, bodyBytes, start, target, url) == forwardDone {
 			return
 		}
 	}
@@ -395,7 +379,7 @@ func (p *Proxy) GetChainType() string {
 	return p.chainType
 }
 
-// GetTargets returns a copy of the targets slice
+// GetTargets returns the targets slice (not a copy)
 func (p *Proxy) GetTargets() []*NodeProvider {
 	return p.targets
 }

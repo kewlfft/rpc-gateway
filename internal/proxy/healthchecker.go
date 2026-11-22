@@ -22,8 +22,6 @@ const (
 	userAgent = "rpc-gateway-health-check"
 )
 
-var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
-
 // JSON-RPC response structure
 type JSONRPCResponse struct {
 	Result any           `json:"result"`
@@ -45,15 +43,10 @@ func (h *HealthChecker) loadAtomic[T any](slot *atomic.Value) (T, bool) {
 
 // makeJSONRPCCall makes an optimized JSON-RPC call (generic params via Go 1.27 methods).
 func (h *HealthChecker) makeJSONRPCCall[P any](ctx context.Context, method string, params P) (*JSONRPCResponse, error) {
-	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer bufPool.Put(buf)
-
-	if err := jsonv2.MarshalWrite(buf, jsonRPCRequest[P]{"2.0", 1, method, params}, jsontext.EscapeForHTML(false)); err != nil {
+	bodyData, err := jsonv2.Marshal(jsonRPCRequest[P]{"2.0", 1, method, params}, jsontext.EscapeForHTML(false))
+	if err != nil {
 		return nil, fmt.Errorf("failed to encode request: %w", err)
 	}
-
-	bodyData := bytes.Clone(buf.Bytes())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.URL, bytes.NewReader(bodyData))
 	if err != nil {
@@ -294,14 +287,11 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 
 		if h.config.ChainType == "solana" {
 			blockNumber, err = h.checkSolanaSlotViaWebSocket(conn)
-			if err != nil {
-				return 0, err
-			}
 		} else {
 			blockNumber, err = h.checkEVMBlockNumberViaWebSocket(conn)
-			if err != nil {
-				return 0, err
-			}
+		}
+		if err != nil {
+			return 0, err
 		}
 
 	case h.config.ChainType == "solana":
@@ -395,7 +385,7 @@ func (h *HealthChecker) checkEthCall(c context.Context) error {
 		return nil
 	}
 
-	if err := performEthCallHealthCheck(c, h.httpClient, h.config.URL); err != nil {
+	if err := performEthCallHealthCheck(c, h.httpClient, h.config.URL, h.config.Headers); err != nil {
 		h.config.Logger.Error("eth_call health check failed",
 			"connectionType", h.config.ConnectionType,
 			"error", err,
@@ -561,14 +551,9 @@ func (h *HealthChecker) Taint(cfg TaintConfig) {
 		wait = cfg.InitialWaitTime
 	}
 
-	// Cancel old timer safely
-	if oldTimer := h.taint.removalTimer; oldTimer != nil {
-		if !oldTimer.Stop() {
-			select {
-			case <-oldTimer.C:
-			default:
-			}
-		}
+	// Cancel old timer (AfterFunc timers have no channel to drain)
+	if h.taint.removalTimer != nil {
+		h.taint.removalTimer.Stop()
 	}
 
 	// Assign new timer and config

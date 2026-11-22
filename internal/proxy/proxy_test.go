@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -769,4 +770,49 @@ func TestAllProvidersFailingScenarios(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "No healthy providers available for chain ", response["error"].(map[string]any)["message"])
 	})
+}
+
+func TestProxyResponsesDoNotLeakInternalHeaders(t *testing.T) {
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+	}))
+	defer upstream.Close()
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer failing.Close()
+
+	serve := func(urls ...string) *httptest.ResponseRecorder {
+		config := createConfig()
+		config.Targets = nil
+		for i, u := range urls {
+			config.Targets = append(config.Targets, NodeProviderConfig{
+				Name:       fmt.Sprintf("p%d", i),
+				Connection: ConnectionConfig{HTTP: HTTPConnection{URL: u}},
+			})
+		}
+		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		p, err := NewProxy(config)
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"eth_chainId"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		p.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// Failover from a failing provider to a working one: success, no internal header
+	rr := serve(failing.URL, upstream.URL)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, rr.Body.String())
+	assert.Empty(t, rr.Header().Get("X-Status-Set"))
+
+	// All providers failing: JSON-RPC error with request id, no internal header
+	rr = serve(failing.URL)
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.Contains(t, rr.Body.String(), `"id":7`)
+	assert.Empty(t, rr.Header().Get("X-Status-Set"))
 }

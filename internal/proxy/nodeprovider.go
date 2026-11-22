@@ -1,21 +1,22 @@
 package proxy
 
 import (
-	"github.com/gorilla/websocket"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type NodeProvider struct {
 	config      NodeProviderConfig
-	wsProxy     http.Handler
+	wsProxy     *WebSocketProxy
 	httpChecker *HealthChecker
 	wsChecker   *HealthChecker
 }
 
 func NewNodeProvider(config NodeProviderConfig, timeout time.Duration, logger *slog.Logger) *NodeProvider {
-	var wsProxy http.Handler
+	var wsProxy *WebSocketProxy
 	if config.Connection.WebSocket.URL != "" {
 		wsProxy = NewWebSocketProxy(config.Connection.WebSocket.URL, timeout, logger)
 	}
@@ -63,8 +64,5 @@ func (n *NodeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (n *NodeProvider) GetWebSocketProxy() *WebSocketProxy {
-	if n.wsProxy == nil {
-		return nil
-	}
-	return n.wsProxy.(*WebSocketProxy)
+	return n.wsProxy
 }
