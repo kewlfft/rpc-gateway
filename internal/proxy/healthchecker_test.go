@@ -47,8 +47,7 @@ func TestBasicHealthchecker(t *testing.T) {
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 
-	healthchecker, err := NewHealthChecker(healthcheckConfig)
-	assert.NoError(t, err)
+	healthchecker := NewHealthChecker(healthcheckConfig)
 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
@@ -88,8 +87,7 @@ func TestHealthCheckerTaint(t *testing.T) {
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 
-	checker, err := NewHealthChecker(config)
-	require.NoError(t, err)
+	checker := NewHealthChecker(config)
 
 	// Start the health checker
 	go checker.Start(t.Context())
@@ -172,8 +170,7 @@ func TestHealthCheckerTaintRemoval(t *testing.T) {
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 
-	checker, err := NewHealthChecker(config)
-	require.NoError(t, err)
+	checker := NewHealthChecker(config)
 
 	// Start the health checker
 	go checker.Start(t.Context())
@@ -191,8 +188,7 @@ func TestHealthCheckerTaintRemoval(t *testing.T) {
 	assert.True(t, checker.IsTainted(), "should be tainted after taint call")
 
 	// Stop the checker
-	err = checker.Stop(t.Context())
-	require.NoError(t, err)
+	require.NoError(t, checker.Stop(t.Context()))
 
 	// Verify taint removal timer is cleaned up
 	time.Sleep(time.Millisecond * 100)
@@ -200,12 +196,11 @@ func TestHealthCheckerTaintRemoval(t *testing.T) {
 }
 
 func TestHealthCheckerTaintHTTP(t *testing.T) {
-	healthchecker, err := NewHealthChecker(HealthCheckerConfig{
+	healthchecker := NewHealthChecker(HealthCheckerConfig{
 		URL:    "http://localhost:8545",
 		Name:   "test",
 		Logger: slog.Default(),
 	})
-	assert.NoError(t, err)
 
 	// Test initial state
 	assert.False(t, healthchecker.IsTainted())
@@ -246,7 +241,7 @@ func TestHealthCheckerTaintHTTP(t *testing.T) {
 //
 //	go test -race ./internal/proxy -run TestHealthCheckerConcurrentTaint
 func TestHealthCheckerConcurrentTaint(t *testing.T) {
-	healthchecker, err := NewHealthChecker(HealthCheckerConfig{
+	healthchecker := NewHealthChecker(HealthCheckerConfig{
 		URL:      "http://localhost:8545",
 		Name:     "test",
 		Path:     "test",
@@ -254,7 +249,6 @@ func TestHealthCheckerConcurrentTaint(t *testing.T) {
 		Timeout:  time.Millisecond * 50,
 		Logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	})
-	require.NoError(t, err)
 
 	ctx := t.Context()
 	go healthchecker.Start(ctx)

@@ -1,10 +1,10 @@
 package proxy
 
 import (
+	"github.com/gorilla/websocket"
+	"log/slog"
 	"net/http"
 	"time"
-	"log/slog"
-	"github.com/gorilla/websocket"
 )
 
 type NodeProvider struct {
@@ -32,12 +32,18 @@ func (n *NodeProvider) SetHealthCheckers(httpChecker, wsChecker *HealthChecker) 
 	n.wsChecker = wsChecker
 }
 
+// HealthChecker returns the health checker for the given connection type.
+func (n *NodeProvider) HealthChecker(connType string) *HealthChecker {
+	if connType == "websocket" {
+		return n.wsChecker
+	}
+	return n.httpChecker
+}
+
 // IsHealthy returns true if the provider is healthy for the given connection type
 func (n *NodeProvider) IsHealthy(connType string) bool {
-	if connType == "websocket" {
-		return n.wsChecker != nil && n.wsChecker.IsHealthy()
-	}
-	return n.httpChecker != nil && n.httpChecker.IsHealthy()
+	hc := n.HealthChecker(connType)
+	return hc != nil && hc.IsHealthy()
 }
 
 func (n *NodeProvider) Name() string {

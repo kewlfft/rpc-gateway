@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -26,6 +27,8 @@ import (
 	"github.com/kewlfft/rpc-gateway/internal/rpcgateway"
 	"gopkg.in/yaml.v3"
 )
+
+func httpOK(status int) bool { return status >= 200 && status < 300 }
 
 const burstN = 5
 
@@ -75,10 +78,11 @@ func rpcErr(data map[string]any) any {
 	if data == nil {
 		return nil
 	}
-	if e, ok := data["error"]; ok && e != nil {
-		return e
+	e := data["error"]
+	if e == nil {
+		return nil
 	}
-	return nil
+	return e
 }
 
 func classify(status int, raw string, errObj any, transport error) string {
@@ -99,7 +103,7 @@ func classify(status int, raw string, errObj any, transport error) string {
 			return "unsupported"
 		}
 	}
-	if status != 0 && (status < 200 || status >= 300) {
+	if status != 0 && !httpOK(status) {
 		return fmt.Sprintf("HTTP %d", status)
 	}
 	if errObj != nil {
@@ -113,7 +117,7 @@ func flagMethod(name string, status int, raw string, data map[string]any, err er
 		return name + " error: " + trunc(err.Error(), 100)
 	}
 	errObj := rpcErr(data)
-	badHTTP := status != 0 && (status < 200 || status >= 300)
+	badHTTP := status != 0 && !httpOK(status)
 	if badHTTP || errObj != nil {
 		label := classify(status, raw, errObj, nil)
 		if label == "rate-limited" || label == "unsupported" {
@@ -168,7 +172,7 @@ func collectBurst(kind string, outs []burstOut) (string, []string, error) {
 		if len(issues) > 0 {
 			msg += ": " + issues[0]
 		}
-		return "", nil, fmt.Errorf("%s", trunc(msg, 200))
+		return "", nil, errors.New(trunc(msg, 200))
 	}
 	return block, burstSummary(kind, issues), nil
 }
@@ -233,7 +237,7 @@ func httpBurst(ctx context.Context, item urlItem, client *http.Client) (string, 
 	for i := range outs {
 		wg.Go(func() {
 			st, d, raw, err := postJSON(ctx, client, item.URL, item.Headers, blockReq)
-			if err != nil || st < 200 || st >= 300 || rpcErr(d) != nil || d == nil {
+			if err != nil || !httpOK(st) || rpcErr(d) != nil || d == nil {
 				outs[i].issue = classify(st, string(raw), rpcErr(d), err)
 				return
 			}
@@ -284,13 +288,13 @@ func httpProbe(ctx context.Context, item urlItem, client *http.Client) (string, 
 		if err != nil {
 			return "", nil, err
 		}
-		if st < 200 || st >= 300 {
+		if !httpOK(st) {
 			return "", nil, fmt.Errorf("HTTP %d: %s", st, trunc(string(raw), 140))
 		}
-		if _, ok := d["block_header"]; !ok {
-			if _, ok := d["blockID"]; !ok {
-				return "", nil, fmt.Errorf("unexpected tron body")
-			}
+		_, hasHeader := d["block_header"]
+		_, hasID := d["blockID"]
+		if !hasHeader && !hasID {
+			return "", nil, errors.New("unexpected tron body")
 		}
 		return "tron-block", nil, nil
 
@@ -299,11 +303,11 @@ func httpProbe(ctx context.Context, item urlItem, client *http.Client) (string, 
 		if err != nil {
 			return "", nil, err
 		}
-		if st < 200 || st >= 300 {
+		if !httpOK(st) {
 			return "", nil, fmt.Errorf("HTTP %d: %s", st, trunc(string(raw), 140))
 		}
 		if e := rpcErr(d); e != nil {
-			return "", nil, fmt.Errorf("%s", trunc(errJSON(e), 160))
+			return "", nil, errors.New(trunc(errJSON(e), 160))
 		}
 		res, ok := d["result"]
 		if !ok {
@@ -346,11 +350,11 @@ func wsProbe(ctx context.Context, item urlItem, timeout time.Duration) (string, 
 			return "", nil, err
 		}
 		if e := rpcErr(msg); e != nil {
-			return "", nil, fmt.Errorf("%s", trunc(errJSON(e), 160))
+			return "", nil, errors.New(trunc(errJSON(e), 160))
 		}
 		res, ok := msg["result"]
 		if !ok {
-			return "", nil, fmt.Errorf("no result")
+			return "", nil, errors.New("no result")
 		}
 		return trunc(fmt.Sprint(res), 48), nil, nil
 	}

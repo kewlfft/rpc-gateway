@@ -87,8 +87,6 @@ func (h *HealthChecker) makeJSONRPCCall[P any](ctx context.Context, method strin
 	return &out, nil
 }
 
-// parseHex is defined in healthchecker_utils.go
-
 // TaintConfig defines the taint behavior parameters
 type TaintConfig struct {
 	InitialWaitTime   time.Duration
@@ -125,17 +123,16 @@ type TaintState struct {
 }
 
 type HealthCheckerConfig struct {
-	Logger             *slog.Logger
-	URL                string
-	Name               string
-	Interval           time.Duration
-	Timeout            time.Duration
-	Path               string
-	ChainType          string
-	ConnectionType     string
-	BlockDiffThreshold uint
-	Headers            map[string]string
-	InitialDelay       time.Duration // Add initial delay to config
+	Logger         *slog.Logger
+	URL            string
+	Name           string
+	Interval       time.Duration
+	Timeout        time.Duration
+	Path           string
+	ChainType      string
+	ConnectionType string
+	Headers        map[string]string
+	InitialDelay   time.Duration
 }
 
 // BlockNumberUpdateCallback is called when a health checker successfully updates its block number
@@ -160,14 +157,14 @@ type HealthChecker struct {
 	onBeforeTaint atomic.Value
 }
 
-func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
+func NewHealthChecker(config HealthCheckerConfig) *HealthChecker {
 	config.ChainType = cmp.Or(config.ChainType, "evm")
 	config.ConnectionType = cmp.Or(config.ConnectionType, "http")
 
 	// Share the same connection pool as user requests for this proxy path
 	httpClient := CreateOptimizedHTTPClient("proxy-"+config.Path, config.Timeout)
 
-	healthchecker := &HealthChecker{
+	h := &HealthChecker{
 		config:        config,
 		httpClient:    httpClient,
 		taintRemoveCh: make(chan struct{}, 1),
@@ -176,16 +173,14 @@ func NewHealthChecker(config HealthCheckerConfig) (*HealthChecker, error) {
 			waitTime: healthCheckTaintConfig.InitialWaitTime,
 		},
 	}
-
-	healthchecker.config.Logger.Debug("Health checker created",
+	h.config.Logger.Debug("Health checker created",
 		"provider", config.Name,
 		"url", config.URL,
 		"path", config.Path,
 		"chainType", config.ChainType,
 		"connectionType", config.ConnectionType,
 		"headers_count", len(config.Headers))
-
-	return healthchecker, nil
+	return h
 }
 
 func (h *HealthChecker) Name() string {
@@ -334,7 +329,7 @@ func (h *HealthChecker) checkBlockNumber(ctx context.Context) (uint64, error) {
 		}
 
 		// Create a POST request with empty body
-		req, err := http.NewRequestWithContext(ctx, "POST", h.config.URL+"/wallet/getnowblock", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.URL+"/wallet/getnowblock", nil)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create request: %w", err)
 		}

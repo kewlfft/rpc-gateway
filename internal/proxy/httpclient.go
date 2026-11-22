@@ -13,20 +13,13 @@ var tlsSessionCache = tls.NewLRUClientSessionCache(128)
 
 // HTTPClientSettings defines configuration for HTTP clients
 type HTTPClientSettings struct {
-	// Timeout for requests
-	Timeout time.Duration
-	// Maximum number of idle connections in the pool
-	MaxIdleConns int
-	// Maximum number of idle connections per host
-	MaxIdleConnsPerHost int
-	// How long to keep idle connections alive
-	IdleConnTimeout time.Duration
-	// Timeout for response headers
+	Timeout               time.Duration
+	MaxIdleConns          int
+	MaxIdleConnsPerHost   int
+	IdleConnTimeout       time.Duration
 	ResponseHeaderTimeout time.Duration
-	// Whether to disable compression
-	DisableCompression bool
-	// Whether to force HTTP/2
-	ForceAttemptHTTP2 bool
+	DisableCompression    bool
+	ForceAttemptHTTP2     bool
 }
 
 // DefaultHTTPClientConfig returns optimized default configuration for both user requests and health checks
@@ -46,7 +39,6 @@ func DefaultHTTPClientConfig(timeout time.Duration) HTTPClientSettings {
 type HTTPClientManager struct {
 	mu         sync.RWMutex
 	clients    map[string]*http.Client
-	configs    map[string]HTTPClientSettings
 	transports map[string]*http.Transport
 }
 
@@ -54,7 +46,6 @@ type HTTPClientManager struct {
 func NewHTTPClientManager() *HTTPClientManager {
 	return &HTTPClientManager{
 		clients:    make(map[string]*http.Client),
-		configs:    make(map[string]HTTPClientSettings),
 		transports: make(map[string]*http.Transport),
 	}
 }
@@ -68,7 +59,6 @@ func (m *HTTPClientManager) GetOrCreateClient(key string, config HTTPClientSetti
 		return client
 	}
 
-	// Create shared transport for this configuration
 	transport := &http.Transport{
 		MaxIdleConns:          config.MaxIdleConns,
 		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
@@ -87,18 +77,8 @@ func (m *HTTPClientManager) GetOrCreateClient(key string, config HTTPClientSetti
 	}
 
 	m.clients[key] = client
-	m.configs[key] = config
 	m.transports[key] = transport
-
 	return client
-}
-
-// GetClient gets an existing client by key
-func (m *HTTPClientManager) GetClient(key string) (*http.Client, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	client, exists := m.clients[key]
-	return client, exists
 }
 
 // Close closes all managed clients and their transports
@@ -109,9 +89,7 @@ func (m *HTTPClientManager) Close() {
 	for _, transport := range m.transports {
 		transport.CloseIdleConnections()
 	}
-
 	clear(m.clients)
-	clear(m.configs)
 	clear(m.transports)
 }
 
@@ -157,22 +135,14 @@ func (f *HTTPClientFactory) Close() {
 func (f *HTTPClientFactory) CreateOptimizedHTTPClient(proxyPath string, timeout time.Duration) *http.Client {
 	manager := f.GetManagerForProxy(proxyPath)
 	config := DefaultHTTPClientConfig(timeout)
-	// Use a unified key to share the connection pool between health checks and user requests
 	key := "unified-" + proxyPath
 	return manager.GetOrCreateClient(key, config)
 }
 
-// Global factory instance (can be replaced for testing)
 var globalFactory = NewHTTPClientFactory()
-
-// GetGlobalFactory returns the global HTTP client factory
-func GetGlobalFactory() *HTTPClientFactory {
-	return globalFactory
-}
 
 // CreateOptimizedHTTPClient creates an optimized HTTP client using the global factory
 func CreateOptimizedHTTPClient(key string, timeout time.Duration) *http.Client {
-	// Extract proxy path from key (e.g., "proxy-eth" -> "eth")
 	proxyPath := key
 	if after, ok := strings.CutPrefix(key, "proxy-"); ok {
 		proxyPath = after

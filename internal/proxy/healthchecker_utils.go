@@ -23,11 +23,7 @@ func parseHex(s string) (uint64, error) {
 	if len(s) == 0 {
 		return 0, nil
 	}
-	if after, ok := strings.CutPrefix(s, "0x"); ok {
-		s = after
-	} else if after, ok := strings.CutPrefix(s, "0X"); ok {
-		s = after
-	}
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
 	if len(s) == 0 {
 		return 0, nil
 	}

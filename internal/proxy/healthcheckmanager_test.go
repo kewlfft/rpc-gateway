@@ -12,8 +12,8 @@ func TestBlockLagAndTaint(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	// Create two health checkers
-	hc1, _ := NewHealthChecker(HealthCheckerConfig{URL: "http://test1", Name: "test1", Logger: logger})
-	hc2, _ := NewHealthChecker(HealthCheckerConfig{URL: "http://test2", Name: "test2", Logger: logger})
+	hc1 := NewHealthChecker(HealthCheckerConfig{URL: "http://test1", Name: "test1", Logger: logger})
+	hc2 := NewHealthChecker(HealthCheckerConfig{URL: "http://test2", Name: "test2", Logger: logger})
 
 	// Helper to set block numbers
 	setBlocks := func(b1, b2 uint64) {
@@ -45,4 +45,4 @@ func TestBlockLagAndTaint(t *testing.T) {
 	}
 	assert.False(t, hc1.IsTainted())
 	assert.False(t, hc2.IsTainted())
-} 
+}

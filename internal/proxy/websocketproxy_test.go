@@ -2,16 +2,17 @@ package proxy
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"log/slog"
 )
 
 func TestWebSocketProxy_UnsubscribeAll(t *testing.T) {
@@ -66,17 +67,11 @@ func TestWebSocketProxy_UnsubscribeAll(t *testing.T) {
 		t.Fatalf("expected %d unsubscribe messages, got %d", len(subIDs), len(received))
 	}
 
-	// Check that each subscription ID appears in at least one message
 	for _, subID := range subIDs {
-		found := false
-		for _, msg := range received {
-			if strings.Contains(msg, subID) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.ContainsFunc(received, func(msg string) bool {
+			return strings.Contains(msg, subID)
+		}) {
 			t.Errorf("subscription ID %q not found in any unsubscribe message", subID)
 		}
 	}
-} 
+}

@@ -25,16 +25,16 @@ type HealthCheckManager struct {
 // NewHealthCheckManager creates a new health check manager
 func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 	checkers := make([]*HealthChecker, 0, len(config.Targets)*2) // *2 for both HTTP and WebSocket
-	
+
 	// Create the manager first so we can use it in the callbacks
 	hcm := &HealthCheckManager{
-		config:   config.HealthChecks,
-		targets:  config.Targets,
-		logger:   config.Logger,
-		path:     config.Path,
+		config:  config.HealthChecks,
+		targets: config.Targets,
+		logger:  config.Logger,
+		path:    config.Path,
 		// Use incremental staggering
-		initialDelay: time.Duration(config.PathIndex * 1000) * time.Millisecond,
-		checkerMap: make(map[string]*HealthChecker),
+		initialDelay: time.Duration(config.PathIndex*1000) * time.Millisecond,
+		checkerMap:   make(map[string]*HealthChecker),
 	}
 
 	for _, target := range config.Targets {
@@ -45,7 +45,7 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 
 		// Create health checkers for both HTTP and WebSocket if configured
 		connections := []struct {
-			url  string
+			url      string
 			connType string
 		}{
 			{target.Connection.HTTP.URL, "http"},
@@ -62,41 +62,25 @@ func NewHealthCheckManager(config Config) (*HealthCheckManager, error) {
 				initialDelay += 500 * time.Millisecond // Stagger WebSocket after HTTP checks
 			}
 
-			checker, err := NewHealthChecker(HealthCheckerConfig{
-				Logger:           config.Logger,
-				URL:              conn.url,
-				Name:             target.Name,
-				Interval:         config.HealthChecks.Interval,
-				Timeout:          config.Timeout,
-				Path:            config.Path,
-				ChainType:       config.ChainType,
-				ConnectionType:  conn.connType,
-				BlockDiffThreshold: uint(config.HealthChecks.BlockDiffThreshold),
-				Headers:           target.Connection.HTTP.Headers,
-				InitialDelay:      initialDelay,
+			checker := NewHealthChecker(HealthCheckerConfig{
+				Logger:         config.Logger,
+				URL:            conn.url,
+				Name:           target.Name,
+				Interval:       config.HealthChecks.Interval,
+				Timeout:        config.Timeout,
+				Path:           config.Path,
+				ChainType:      config.ChainType,
+				ConnectionType: conn.connType,
+				Headers:        target.Connection.HTTP.Headers,
+				InitialDelay:   initialDelay,
 			})
-			if err != nil {
-				// For WebSocket connections, log a warning and continue instead of failing
-				if conn.connType == "websocket" {
-					config.Logger.Warn("failed to create WebSocket health checker, skipping WebSocket health checks",
-						"target", target.Name,
-						"url", conn.url,
-						"error", err)
-					continue
-				}
-				return nil, fmt.Errorf("failed to create %s health checker for target %s: %w", conn.connType, target.Name, err)
-			}
 
-			// Set up block number update callback
 			checker.SetBlockNumberUpdateCallback(func(blockNumber uint64) {
 				hcm.checkBlockLagAndTaint(target.Name, blockNumber)
 			})
 
 			checkers = append(checkers, checker)
-			
-			// Store in map for O(1) lookups
-			key := fmt.Sprintf("%s:%s", target.Name, conn.connType)
-			hcm.checkerMap[key] = checker
+			hcm.checkerMap[target.Name+":"+conn.connType] = checker
 		}
 	}
 
@@ -129,8 +113,7 @@ func (h *HealthCheckManager) GetHealthChecker(name string, connectionType string
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	key := fmt.Sprintf("%s:%s", name, connectionType)
-	return h.checkerMap[key]
+	return h.checkerMap[name+":"+connectionType]
 }
 
 // SetWebSocketProxyReferences sets the WebSocket proxy references for all WebSocket health checkers
@@ -139,12 +122,11 @@ func (h *HealthCheckManager) SetWebSocketProxyReferences(wsProxies map[string]*W
 	defer h.mu.Unlock()
 
 	for name, wsProxy := range wsProxies {
-		key := fmt.Sprintf("%s:websocket", name)
-		if checker, exists := h.checkerMap[key]; exists {
+		if checker, exists := h.checkerMap[name+":websocket"]; exists {
 			checker.SetBeforeTaintCallback(func() {
 				wsProxy.UnsubscribeAll()
 			})
-			h.logger.Debug("WebSocket proxy reference set", 
+			h.logger.Debug("WebSocket proxy reference set",
 				"provider", name, "path", h.path)
 		}
 	}

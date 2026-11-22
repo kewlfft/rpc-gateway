@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -9,7 +10,7 @@ import (
 )
 
 type Server struct {
-	server *http.Server
+	server  *http.Server
 	enabled bool
 }
 
@@ -39,7 +40,7 @@ func NewServer(config Config) *Server {
 	// Add health check endpoint
 	r.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = io.WriteString(w, "OK")
 	})
 	r.Handle("/metrics", promhttp.Handler())
 

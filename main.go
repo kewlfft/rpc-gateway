@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,34 +19,20 @@ var (
 	BuildTime = "unknown"
 )
 
-// Helper function for writing error messages to stderr
-func writeError(msg string) {
-	os.Stderr.Write([]byte(msg + "\n"))
-}
-
-func printVersion() {
-	os.Stdout.Write([]byte("rpcgateway v" + Version + " (git: " + GitCommit + ", built: " + BuildTime + ")\n"))
-	os.Exit(0)
-}
-
 func main() {
-	// Define command line flags
 	configPath := flag.String("config", "", "Path to the configuration file")
 	randomizeProviders := flag.Bool("randomize-providers", false, "Randomize providers at startup (overrides config file)")
 	showVersion := flag.Bool("version", false, "Show version information")
-
-	// Parse flags
 	flag.Parse()
 
-	// Check for version flag
 	if *showVersion {
-		printVersion()
+		fmt.Printf("rpcgateway v%s (git: %s, built: %s)\n", Version, GitCommit, BuildTime)
+		os.Exit(0)
 	}
 
-	// Validate required flags
 	if *configPath == "" {
-		writeError("Error: --config flag is required")
-		writeError("Usage: " + os.Args[0] + " --config <config-file> [--randomize-providers] [--version]")
+		fmt.Fprintln(os.Stderr, "Error: --config flag is required")
+		fmt.Fprintf(os.Stderr, "Usage: %s --config <config-file> [--randomize-providers] [--version]\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -58,11 +45,10 @@ func main() {
 
 	service, err := rpcgateway.NewRPCGatewayFromConfigFile(*configPath)
 	if err != nil {
-		writeError("error: " + err.Error())
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 
-	// Override randomizeProviders from config if flag is set
 	if *randomizeProviders {
 		service.SetRandomizeProviders(true)
 	}
@@ -71,13 +57,11 @@ func main() {
 	defer stop()
 
 	if err := service.Start(ctx); err != nil {
-		writeError("error: " + err.Error())
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 
 	<-ctx.Done()
 	slog.Info("received shutdown signal")
-
-	// Use a fresh context for shutdown
 	service.Stop(context.Background())
 }

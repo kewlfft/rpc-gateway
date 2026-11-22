@@ -46,14 +46,14 @@ type ChainTypeHandler interface {
 
 // Proxy represents an RPC proxy with health checking and failover
 type Proxy struct {
-	hcm             *HealthCheckManager
-	timeout         time.Duration
-	logger          *slog.Logger
-	targets         []*NodeProvider
-	chainType       string
-	client          *http.Client
-	healthyPool     sync.Pool
-	metricsEnabled  bool
+	hcm            *HealthCheckManager
+	timeout        time.Duration
+	logger         *slog.Logger
+	targets        []*NodeProvider
+	chainType      string
+	client         *http.Client
+	healthyPool    sync.Pool
+	metricsEnabled bool
 }
 
 // Ensure Proxy implements ChainTypeHandler
@@ -130,13 +130,6 @@ func (p *Proxy) HasNodeProviderFailed(statusCode int) bool {
 	return statusCode < 200 || statusCode >= 300
 }
 
-// writeErrorResponse writes an error response in the appropriate format based on the request
-// bodyBytes is optional - if provided, it will be used to extract the request ID
-// providerDetails is optional - if provided, it will be included in the error log for diagnostics
-func (p *Proxy) writeErrorResponse(w http.ResponseWriter, r *http.Request, message string, status int, bodyBytes []byte, providerDetails ...string) {
-	rpcerrors.WriteJSONRPCError(w, r, message, status, bodyBytes, providerDetails...)
-}
-
 // copyResponse copies headers, status code, and body from the source response to the target response writer
 func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 	// Check if headers have already been written to avoid "superfluous response.WriteHeader call"
@@ -188,15 +181,7 @@ func (p *Proxy) handleProviderFailure(target *NodeProvider, r *http.Request, sta
 	}
 
 	connectionType := p.getConnectionType(r)
-
-	var hc *HealthChecker
-	if connectionType == "websocket" {
-		hc = target.wsChecker
-	} else {
-		hc = target.httpChecker
-	}
-
-	if hc != nil {
+	if hc := target.HealthChecker(connectionType); hc != nil {
 		hc.TaintHTTP()
 	}
 
@@ -317,7 +302,8 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, body []by
 // Update ServeHTTP to use the unified forwardRequest
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	isWebSocket := websocket.IsWebSocketUpgrade(r)
+	connType := p.getConnectionType(r)
+	isWebSocket := connType == "websocket"
 
 	var bodyBytes []byte
 	if !isWebSocket {
@@ -329,19 +315,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error", err,
 				"method", r.Method,
 				"path", r.URL.Path)
-			p.writeErrorResponse(w, r, "Failed to read request body", http.StatusBadRequest, nil)
+			rpcerrors.WriteJSONRPCError(w, r, "Failed to read request body", http.StatusBadRequest, nil)
 			return
 		}
 	}
 
-	// Pre-compute connection type and get healthy providers
-	connType := p.getConnectionType(r)
 	healthyProviders := p.getHealthyProviders(connType)
 	defer p.releaseHealthyProviders(healthyProviders)
 
 	if len(healthyProviders) == 0 {
 		providerDetails := p.collectProviderDetails(connType)
-		p.writeErrorResponse(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
+		rpcerrors.WriteJSONRPCError(w, r, fmt.Sprintf("No healthy providers available for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
 		return
 	}
 
@@ -382,11 +366,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		result := p.forwardRequest(w, r, bodyBytes, start, target, url)
-		if result == 1 {
-			// Success
-			return
-		} else if result == -1 {
-			// Client disconnected - don't retry
+		if result != 0 {
+			// 1 = success, -1 = client disconnected — either way stop retrying
 			return
 		}
 
@@ -401,7 +382,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	providerDetails := p.collectProviderDetails(connType)
-	p.writeErrorResponse(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
+	rpcerrors.WriteJSONRPCError(w, r, fmt.Sprintf("All providers failed for chain %s", p.hcm.path), http.StatusServiceUnavailable, bodyBytes, providerDetails...)
 }
 
 // GetHealthCheckManager returns the health check manager for this proxy
@@ -441,22 +422,15 @@ func (p *Proxy) collectProviderDetails(connType string) []string {
 	providerDetails := make([]string, len(p.targets))
 	for i, target := range p.targets {
 		name := target.Name()
-		var checker *HealthChecker
-		if connType == "websocket" {
-			checker = target.wsChecker
-		} else {
-			checker = target.httpChecker
+		checker := target.HealthChecker(connType)
+		switch {
+		case checker == nil:
+			providerDetails[i] = name + ":no_checker"
+		case checker.IsTainted():
+			providerDetails[i] = name + ":tainted"
+		default:
+			providerDetails[i] = name + ":unknown"
 		}
-
-		var status string
-		if checker == nil {
-			status = name + ":no_checker"
-		} else if checker.IsTainted() {
-			status = name + ":tainted"
-		} else {
-			status = name + ":unknown"
-		}
-		providerDetails[i] = status
 	}
 	return providerDetails
 }

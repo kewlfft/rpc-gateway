@@ -32,7 +32,6 @@ type RPCGateway struct {
 	metrics *metrics.Server
 }
 
-
 func (r *RPCGateway) Start(c context.Context) error {
 	// Check if ports are available
 	if err := checkPortAvailability(r.config.Port); err != nil {
@@ -159,14 +158,14 @@ func NewRPCGateway(config RPCGatewayConfig) (*RPCGateway, error) {
 
 		// Create proxy configuration
 		proxyCfg := proxy.Config{
-			Path:            proxyConfig.Path,
-			ChainType:       proxyConfig.ChainType,
-			Timeout:         timeout,
-			HealthChecks:    proxyConfig.HealthChecks,
-			Targets:         proxyConfig.Targets,
-			Logger:          logger,
-			PathIndex:       i, // Pass the path index for incremental staggering
-			MetricsEnabled:  config.Metrics.IsEnabled(),
+			Path:           proxyConfig.Path,
+			ChainType:      proxyConfig.ChainType,
+			Timeout:        timeout,
+			HealthChecks:   proxyConfig.HealthChecks,
+			Targets:        proxyConfig.Targets,
+			Logger:         logger,
+			PathIndex:      i, // Pass the path index for incremental staggering
+			MetricsEnabled: config.Metrics.IsEnabled(),
 		}
 
 		// Create proxy
@@ -247,9 +246,9 @@ func NewRPCGatewayFromConfigFile(s string) (*RPCGateway, error) {
 		return nil, err
 	}
 
-	paths := make([]string, len(config.Proxies))
-	for i, p := range config.Proxies {
-		paths[i] = p.Path
+	paths := make([]string, 0, len(config.Proxies))
+	for _, p := range config.Proxies {
+		paths = append(paths, p.Path)
 	}
 	slog.Info("Loaded config", "proxies", len(config.Proxies), "paths", paths)
 
