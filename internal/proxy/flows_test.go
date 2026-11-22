@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -339,4 +340,97 @@ func TestRequestBodySizeLimit(t *testing.T) {
 
 	assert.Equal(t, int32(1), hits.Load(), "oversized requests must not reach the provider")
 	assert.False(t, p.hcm.GetHealthChecker("p", "http").IsTainted(), "oversized requests must not taint")
+}
+
+// streamingUpstream sends response headers after headerDelay, then `chunks`
+// chunks separated by gap, flushing each one.
+func streamingUpstream(t *testing.T, headerDelay, gap time.Duration, chunks int) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		time.Sleep(headerDelay)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		for i := range chunks {
+			if i > 0 {
+				time.Sleep(gap)
+			}
+			_, _ = w.Write([]byte(strings.Repeat("x", 1000)))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func newTimeoutProxy(t *testing.T, timeout time.Duration, urls ...string) *Proxy {
+	t.Helper()
+	config := createConfig()
+	config.Path = t.Name()
+	config.Timeout = timeout
+	config.Logger = quietLogger
+	for i, u := range urls {
+		config.Targets = append(config.Targets, httpTarget(fmt.Sprintf("p%d", i), u))
+	}
+	p, err := NewProxy(config)
+	require.NoError(t, err)
+	return p
+}
+
+func TestLongStreamingResponseIsNotCutByTimeout(t *testing.T) {
+	const timeout = 200 * time.Millisecond
+	// 12 chunks, 100 ms apart: ~1.1 s total, over 5x the timeout, never stalling
+	p := newTimeoutProxy(t, timeout, streamingUpstream(t, 0, 100*time.Millisecond, 12).URL)
+	start := time.Now()
+	rr := postRPC(p, "/", nil)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, 12*1000, rr.Body.Len(), "full body must arrive")
+	assert.Greater(t, time.Since(start), 5*timeout)
+	assert.False(t, p.hcm.GetHealthChecker("p0", "http").IsTainted())
+}
+
+func TestSlowFirstByteFailsOver(t *testing.T) {
+	const timeout = 200 * time.Millisecond
+	slow := streamingUpstream(t, time.Second, 0, 1)
+	fast := streamingUpstream(t, 0, 0, 1)
+	p := newTimeoutProxy(t, timeout, slow.URL, fast.URL)
+	start := time.Now()
+	rr := postRPC(p, "/", nil)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, 1000, rr.Body.Len())
+	assert.Less(t, time.Since(start), 800*time.Millisecond, "must give up on the slow provider after ~timeout")
+	assert.True(t, p.hcm.GetHealthChecker("p0", "http").IsTainted())
+	assert.False(t, p.hcm.GetHealthChecker("p1", "http").IsTainted())
+}
+
+func TestStallMidResponseIsCutAndTainted(t *testing.T) {
+	const timeout = 200 * time.Millisecond
+	// Second chunk comes 2 s after the first: a stall well over the timeout
+	p := newTimeoutProxy(t, timeout, streamingUpstream(t, 0, 2*time.Second, 2).URL)
+	start := time.Now()
+	rr := postRPC(p, "/", nil)
+	assert.Less(t, time.Since(start), time.Second, "stall must be cut after ~timeout")
+	assert.Equal(t, 1000, rr.Body.Len(), "only the data sent before the stall")
+	assert.True(t, p.hcm.GetHealthChecker("p0", "http").IsTainted())
+}
+
+// slowWriter accepts data slowly, like a client on a poor link.
+type slowWriter struct {
+	discardWriter
+	delay time.Duration
+}
+
+func (w *slowWriter) Write(b []byte) (int, error) {
+	time.Sleep(w.delay)
+	return len(b), nil
+}
+
+func TestSlowClientIsNotBlamedOnProvider(t *testing.T) {
+	const timeout = 200 * time.Millisecond
+	// Provider is fast; the client takes 2x the timeout to accept each write
+	p := newTimeoutProxy(t, timeout, streamingUpstream(t, 0, 0, 3).URL)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+	w := &slowWriter{discardWriter: discardWriter{h: make(http.Header)}, delay: 2 * timeout}
+	p.ServeHTTP(w, req)
+	assert.False(t, p.hcm.GetHealthChecker("p0", "http").IsTainted())
 }

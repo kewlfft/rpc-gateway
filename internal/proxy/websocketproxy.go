@@ -166,9 +166,14 @@ func (p *WebSocketProxy) createNewConnection() *websocket.Conn {
 		EnableCompression: true,
 	}
 
-	conn, _, err := dialer.Dial(p.targetURL, nil)
+	conn, resp, err := dialer.Dial(p.targetURL, nil)
 	if err != nil {
-		p.logger.Error("failed to create new connection", "error", err)
+		// The status (e.g. 403 IP blocked, 429 rate limited) says why a handshake failed
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		p.logger.Error("failed to create new connection", "error", err, "status", status)
 		return nil
 	}
 	return conn

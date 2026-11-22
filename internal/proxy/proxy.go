@@ -150,8 +150,12 @@ func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response) error {
 	maps.Copy(w.Header(), withoutHopByHop(resp.Header))
 	w.WriteHeader(resp.StatusCode)
 
-	// Stream the response body directly
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	// Stream the response body directly. The body wrapper hides WriterTo, so give
+	// io.CopyBuffer a pooled buffer for writers without ReadFrom (http.response has
+	// ReadFrom and streams through its own bufio buffer instead).
+	buf := copyBufPool.Get().(*[]byte)
+	defer copyBufPool.Put(buf)
+	if _, err := io.CopyBuffer(w, resp.Body, *buf); err != nil {
 		// Check if this is a broken pipe error (client disconnected)
 		if isBrokenPipeError(err) {
 			// Don't treat broken pipe as a provider failure - it's a client disconnection
@@ -208,6 +212,27 @@ func (p *Proxy) logSuccessfulRequest(r *http.Request, name string, status int, s
 	)
 }
 
+// errUpstreamTimeout is the cancel cause when a provider exceeds the timeout,
+// either waiting for response headers or within a single body read.
+var errUpstreamTimeout = errors.New("upstream timeout")
+
+var copyBufPool = sync.Pool{New: func() any { b := make([]byte, 32<<10); return &b }}
+
+// stallTimeoutReader arms the timer for the duration of each Read only, so time
+// spent writing to a slow client is never counted against the provider.
+type stallTimeoutReader struct {
+	io.ReadCloser
+	timer   *time.Timer
+	timeout time.Duration
+}
+
+func (s *stallTimeoutReader) Read(b []byte) (int, error) {
+	s.timer.Reset(s.timeout)
+	n, err := s.ReadCloser.Read(b)
+	s.timer.Stop()
+	return n, err
+}
+
 // forwardResult tells ServeHTTP whether to try the next provider.
 type forwardResult int
 
@@ -222,10 +247,14 @@ const (
 func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header http.Header, body []byte, start time.Time, target *NodeProvider, urlPath string, last bool) forwardResult {
 	name := target.Name()
 
-	// Create a new context with timeout for this specific request to avoid context cancellation cascade
-	// This prevents all providers from failing when the original request context is cancelled
-	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
-	defer cancel()
+	// Detached from r.Context(), so a client cancel never looks like a provider failure.
+	// One timer enforces p.timeout twice: first until the response headers arrive,
+	// then per body read (see stallTimeoutReader), so a large response may stream
+	// for as long as it needs while a stalled provider is still cut off.
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	timer := time.AfterFunc(p.timeout, func() { cancel(errUpstreamTimeout) })
+	defer timer.Stop()
 
 	// Create request with proper URL using the new context
 	req, err := http.NewRequestWithContext(ctx, r.Method, urlPath, bytes.NewReader(body))
@@ -265,13 +294,12 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header ht
 	// and redirects are not followed (a 3xx counts as a provider failure).
 	resp, err := p.transport.RoundTrip(req)
 	if err != nil {
-		// Check if this is a context cancellation error
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			p.logger.Warn("Request cancelled or timed out",
+		if errors.Is(context.Cause(ctx), errUpstreamTimeout) {
+			p.logger.Warn("No response headers within timeout",
 				"error", err,
 				"url", urlPath,
 				"method", r.Method,
-				"context_error", ctx.Err())
+				"timeout", p.timeout)
 		} else {
 			p.logger.Error("Request failed",
 				"error", err,
@@ -282,6 +310,9 @@ func (p *Proxy) forwardRequest(w http.ResponseWriter, r *http.Request, header ht
 		return forwardRetry
 	}
 	defer resp.Body.Close()
+	// Headers are in: from now on the timeout applies to each body read, not the total
+	timer.Stop()
+	resp.Body = &stallTimeoutReader{ReadCloser: resp.Body, timer: timer, timeout: p.timeout}
 
 	// A bad request (e.g. a GET, malformed JSON) gets the same answer from every
 	// provider: try the next one without tainting, and hand the last answer back.

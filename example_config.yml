@@ -6,7 +6,7 @@ randomizeProviders: true # randomize the order of providers at startup for all p
 
 proxies:
   - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
-    timeout: "1s" # timeout for both upstream requests and health checks
+    timeout: "1s" # health checks, and time for a provider to start responding or stall mid-response
     healthChecks:
       interval: "60s" # how often to do healthchecks
       blockDiffThreshold: 2 # maximum allowed block difference between providers

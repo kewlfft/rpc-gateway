@@ -20,7 +20,7 @@ port: 3000 # port for RPC gateway
 
 proxies:
   - path: "eth" # directory path for the proxy (e.g. http://localhost:3000/eth)
-    timeout: "1s" # timeout for both upstream requests and health checks
+    timeout: "1s" # health checks, and time for a provider to start responding or stall mid-response
     healthChecks:
       interval: "12s" # how often to do healthchecks
       blockDiffThreshold: 2 # how many blocks behind the max block number to taint
@@ -40,7 +40,7 @@ proxies:
 - `port`: The port on which the RPC gateway will listen
 - `proxies`: List of proxy configurations for different chains
   - `path`: The URL path for this proxy (e.g., "eth" for Ethereum)
-  - `timeout`: How long to wait for both upstream responses and health checks
+  - `timeout`: Health check timeout, and how long a provider may take to start responding (send response headers). Response bodies may stream for as long as needed, but a provider that sends nothing for longer than `timeout` mid-response is cut off
   - `healthChecks`: Health check configuration
     - `interval`: How often to perform health checks
     - `blockDiffThreshold`: Maximum allowed block difference between providers
